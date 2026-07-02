@@ -15,6 +15,8 @@ from app.security import (
     validate_s3_key,
     validate_bucket_name,
     sanitize_filename,
+    validate_system_metadata,
+    validate_user_metadata,
     audit_log,
     validate_csrf_token,
 )
@@ -166,36 +168,56 @@ async def upload_object(
     bucket: str = Form(...),
     prefix: str = Form(""),
     csrf_token: str = Form(...),
+    system_metadata: str = Form(""),   # JSON array of {key, value} for system-defined headers
+    user_metadata: str = Form(""),     # JSON array of {key, value} for x-amz-meta-* headers
     file: UploadFile = File(...),
 ):
-    """Upload a file to S3."""
+    """
+    Upload a file to S3 with optional system-defined and user-defined metadata.
+    system_metadata maps to boto3 ExtraArgs (ContentType, CacheControl, etc.)
+    user_metadata    maps to boto3 ExtraArgs['Metadata'] (x-amz-meta-* headers).
+    """
     _check_csrf(request, csrf_token)
     creds, allowed = _get_creds_and_buckets(request)
     bucket = validate_bucket_name(bucket, allowed)
 
-    # Sanitize filename
+    # Validate both metadata payloads (raises HTTPException on bad input)
+    sys_args  = validate_system_metadata(system_metadata)   # e.g. {"ContentType": "image/png"}
+    user_meta = validate_user_metadata(user_metadata)        # e.g. {"department": "finance"}
+
+    # Sanitize filename and build S3 key
     safe_name = sanitize_filename(file.filename or "unnamed")
-    # Build S3 key
     key = f"{prefix.lstrip('/')}{safe_name}" if prefix else safe_name
 
-    # Check file size header if available
     content_length = int(request.headers.get("content-length", 0))
     if content_length > MAX_UPLOAD_BYTES:
         raise HTTPException(status_code=413, detail=f"File exceeds max size ({MAX_UPLOAD_MB} MB)")
 
     try:
+        import io
         file_content = await file.read()
-        file_size = len(file_content)
+        file_size    = len(file_content)
         if file_size > MAX_UPLOAD_BYTES:
             raise HTTPException(status_code=413, detail=f"File exceeds max size ({MAX_UPLOAD_MB} MB)")
 
-        import io
-        file_obj = io.BytesIO(file_content)
         content_type = file.content_type or "application/octet-stream"
 
-        s3_service.upload_object(creds, bucket, key, file_obj, content_type, file_size)
-        audit_log(request, "UPLOAD", bucket=bucket, key=key, detail=f"size={file_size}")
-        return JSONResponse({"success": True, "key": key, "message": f"'{safe_name}' uploaded successfully"})
+        s3_service.upload_object(
+            creds, bucket, key,
+            io.BytesIO(file_content),
+            content_type, file_size,
+            user_metadata=user_meta,
+            system_extra_args=sys_args,
+        )
+
+        sys_keys  = list(sys_args.keys())
+        user_keys = list(user_meta.keys())
+        audit_log(
+            request, "UPLOAD", bucket=bucket, key=key,
+            detail=f"size={file_size} sys={sys_keys} user={user_keys}",
+        )
+        return JSONResponse({"success": True, "key": key,
+                             "message": f"'{safe_name}' uploaded successfully"})
     except HTTPException:
         raise
     except Exception as e:

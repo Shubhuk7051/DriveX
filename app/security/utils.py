@@ -177,6 +177,151 @@ def sanitize_filename(filename: str) -> str:
     return filename or 'unnamed_file'
 
 
+# S3 user-defined metadata keys must be valid HTTP header token chars.
+METADATA_KEY_PATTERN = re.compile(r'^[a-zA-Z0-9\-_]{1,128}$')
+MAX_METADATA_VALUE_LEN = 1024       # generous per-value cap
+MAX_METADATA_TOTAL_BYTES = 2048     # S3 hard limit on combined user metadata size
+
+# System-defined metadata keys that map to boto3 ExtraArgs (not Metadata dict).
+# Keys here are the canonical S3 header names as shown in the UI.
+SYSTEM_METADATA_KEYS = {
+    "Content-Type",
+    "Cache-Control",
+    "Content-Disposition",
+    "Content-Encoding",
+    "Content-Language",
+    "Expires",
+    "Website-Redirect-Location",
+}
+
+# Mapping from UI key name → boto3 ExtraArgs key name
+SYSTEM_KEY_TO_BOTO3 = {
+    "Content-Type":              "ContentType",
+    "Cache-Control":             "CacheControl",
+    "Content-Disposition":       "ContentDisposition",
+    "Content-Encoding":          "ContentEncoding",
+    "Content-Language":          "ContentLanguage",
+    "Expires":                   "Expires",
+    "Website-Redirect-Location": "WebsiteRedirectLocation",
+}
+
+
+def validate_system_metadata(raw: Optional[str]) -> dict:
+    """
+    Parse and validate system-defined metadata JSON (list of {key, value} objects).
+    Returns a dict of boto3 ExtraArgs keys → values  (e.g. {"ContentType": "image/png"}).
+    Content-Type is returned separately so the caller can override the auto-detected type.
+    """
+    if not raw or not raw.strip():
+        return {}
+
+    try:
+        entries = json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        raise HTTPException(status_code=400, detail="System metadata must be valid JSON")
+
+    if not isinstance(entries, list):
+        raise HTTPException(status_code=400, detail="System metadata must be a JSON array")
+
+    boto3_args = {}
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        key   = str(entry.get("key",   "")).strip()
+        value = str(entry.get("value", "")).strip()
+
+        if not key:
+            continue
+        if key not in SYSTEM_METADATA_KEYS:
+            raise HTTPException(status_code=400,
+                detail=f"'{key}' is not a supported system-defined metadata key.")
+        if not value:
+            raise HTTPException(status_code=400,
+                detail=f"System metadata value for '{key}' cannot be empty.")
+        if len(value) > MAX_METADATA_VALUE_LEN:
+            raise HTTPException(status_code=400,
+                detail=f"System metadata value for '{key}' is too long (max {MAX_METADATA_VALUE_LEN} chars).")
+        if not value.isascii():
+            raise HTTPException(status_code=400,
+                detail=f"System metadata value for '{key}' must be ASCII text.")
+        if DANGEROUS_PATH_PATTERNS.search(value):
+            raise HTTPException(status_code=400,
+                detail=f"Invalid characters in system metadata value for '{key}'.")
+
+        boto3_key = SYSTEM_KEY_TO_BOTO3[key]
+        boto3_args[boto3_key] = value
+
+    return boto3_args
+
+
+def validate_user_metadata(raw: Optional[str]) -> dict:
+    """
+    Parse and validate user-defined metadata JSON (list of {key, value} objects).
+    Returns a clean {str: str} dict for boto3's ExtraArgs["Metadata"].
+    Keys are lowercased to match S3's normalisation behaviour.
+    """
+    if not raw or not raw.strip():
+        return {}
+
+    try:
+        entries = json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        raise HTTPException(status_code=400, detail="User metadata must be valid JSON")
+
+    if not isinstance(entries, list):
+        raise HTTPException(status_code=400, detail="User metadata must be a JSON array")
+
+    if len(entries) > 20:
+        raise HTTPException(status_code=400, detail="Too many user metadata fields (max 20)")
+
+    clean = {}
+    total_size = 0
+
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        key   = str(entry.get("key",   "")).strip()
+        value = str(entry.get("value", "")).strip()
+
+        if not key and not value:
+            continue  # silently skip fully empty rows from the UI
+
+        if not key:
+            raise HTTPException(status_code=400, detail="User metadata key cannot be empty.")
+
+        if not METADATA_KEY_PATTERN.match(key):
+            raise HTTPException(status_code=400,
+                detail=f"Invalid user metadata key '{key}'. "
+                       f"Use only letters, numbers, hyphens, and underscores (max 128 chars).")
+        if not value:
+            raise HTTPException(status_code=400,
+                detail=f"User metadata value for '{key}' cannot be empty.")
+        if len(value) > MAX_METADATA_VALUE_LEN:
+            raise HTTPException(status_code=400,
+                detail=f"User metadata value for '{key}' is too long (max {MAX_METADATA_VALUE_LEN} chars).")
+        if not value.isascii():
+            raise HTTPException(status_code=400,
+                detail=f"User metadata value for '{key}' must be ASCII text.")
+        if DANGEROUS_PATH_PATTERNS.search(value):
+            raise HTTPException(status_code=400,
+                detail=f"Invalid characters in user metadata value for '{key}'.")
+
+        total_size += len(key) + len(value)
+        if total_size > MAX_METADATA_TOTAL_BYTES:
+            raise HTTPException(status_code=400,
+                detail="Combined user metadata exceeds the 2 KB S3 limit.")
+
+        clean[key.lower()] = value   # S3 normalises metadata keys to lowercase
+
+    return clean
+
+
+# Keep the old name as an alias so existing call-sites don't break while we migrate.
+def validate_object_metadata(raw: Optional[str]) -> dict:
+    """Legacy alias → delegates to validate_user_metadata."""
+    return validate_user_metadata(raw)
+
+
 # --- Audit Logging ---
 
 def audit_log(request: Request, action: str, bucket: str = None,

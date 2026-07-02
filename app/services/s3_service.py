@@ -183,28 +183,62 @@ def download_object(creds: dict, bucket: str, key: str):
         _raise_s3_error(e, bucket, key)
 
 
-def upload_object(creds: dict, bucket: str, key: str, file_obj, content_type: str = "application/octet-stream", file_size: int = 0):
+def upload_object(
+    creds: dict,
+    bucket: str,
+    key: str,
+    file_obj,
+    content_type: str = "application/octet-stream",
+    file_size: int = 0,
+    user_metadata: Optional[dict] = None,
+    system_extra_args: Optional[dict] = None,
+):
     """
     Upload a file to S3. Uses multipart upload for files > MULTIPART_THRESHOLD.
+
+    Args:
+        user_metadata:    Dict of custom key/value pairs stored as S3 user metadata
+                          (accessible via x-amz-meta-* headers).
+        system_extra_args: Dict of boto3 ExtraArgs produced from system-defined metadata
+                          (e.g. {"ContentType": "image/png", "CacheControl": "max-age=86400"}).
+                          If ContentType is present here it overrides the auto-detected value.
     """
     s3 = get_s3_client(creds)
+    user_metadata   = user_metadata or {}
+    system_extra_args = system_extra_args or {}
+
+    # System args take precedence over auto-detected content type
+    effective_content_type = system_extra_args.pop("ContentType", content_type)
+
+    # Build the final ExtraArgs dict
+    extra_args: dict = {"ContentType": effective_content_type}
+    extra_args.update(system_extra_args)          # CacheControl, ContentDisposition, etc.
+    if user_metadata:
+        extra_args["Metadata"] = user_metadata    # stored as x-amz-meta-* headers
+
     try:
         if file_size > MULTIPART_THRESHOLD:
-            _multipart_upload(s3, bucket, key, file_obj, content_type)
+            _multipart_upload(s3, bucket, key, file_obj, extra_args)
         else:
-            s3.upload_fileobj(
-                file_obj,
-                bucket,
-                key,
-                ExtraArgs={"ContentType": content_type},
-            )
+            s3.upload_fileobj(file_obj, bucket, key, ExtraArgs=extra_args)
     except botocore.exceptions.ClientError as e:
         _raise_s3_error(e, bucket, key)
 
 
-def _multipart_upload(s3_client, bucket: str, key: str, file_obj, content_type: str):
-    """Perform multipart upload for large files."""
-    mpu = s3_client.create_multipart_upload(Bucket=bucket, Key=key, ContentType=content_type)
+def _multipart_upload(s3_client, bucket: str, key: str, file_obj, extra_args: Optional[dict] = None):
+    """Perform multipart upload for large files, forwarding all ExtraArgs to CreateMultipartUpload."""
+    extra_args = extra_args or {}
+    # CreateMultipartUpload accepts a subset of the PutObject params
+    create_kwargs = {
+        "Bucket": bucket,
+        "Key":    key,
+        **{k: v for k, v in extra_args.items()
+           if k in ("ContentType", "CacheControl", "ContentDisposition",
+                    "ContentEncoding", "ContentLanguage", "Expires",
+                    "WebsiteRedirectLocation", "Metadata",
+                    "ServerSideEncryption", "StorageClass")},
+    }
+    mpu = s3_client.create_multipart_upload(**create_kwargs)
     upload_id = mpu["UploadId"]
     parts = []
     part_number = 1
@@ -308,6 +342,7 @@ def get_object_metadata(creds: dict, bucket: str, key: str) -> dict:
             "content_type": head.get("ContentType", "application/octet-stream"),
             "etag": head.get("ETag", "").strip('"'),
             "storage_class": head.get("StorageClass", "STANDARD"),
+            "metadata": head.get("Metadata", {}),  # custom user metadata (lowercased keys per S3 behavior)
         }
     except botocore.exceptions.ClientError as e:
         _raise_s3_error(e, bucket, key)

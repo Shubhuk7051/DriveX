@@ -47,6 +47,7 @@ document.addEventListener('DOMContentLoaded', () => {
       closeFolderModal();
       closeRenameModal();
       closePresignModal();
+      closeInfoModal();
     }
   });
 });
@@ -209,6 +210,9 @@ function renderListView(folders, files) {
               </button>
               <button class="row-action-btn" onclick="openPresignModal('${escHtml(item.key)}')" title="Copy URL">
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
+              </button>
+              <button class="row-action-btn" onclick="openInfoModal('${escHtml(item.key)}')" title="View Info">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
               </button>
             `}
             <button class="row-action-btn" onclick="openRenameModal('${escHtml(item.key)}', '${escHtml(item.name)}')" title="Rename">
@@ -390,6 +394,14 @@ function openUploadModal() {
   document.getElementById('uploadQueue').innerHTML = '';
   document.getElementById('uploadStartBtn').disabled = true;
   document.getElementById('fileInput').value = '';
+
+  // Show upload target path in subtitle
+  const path = state.bucket + (state.prefix ? '/' + state.prefix : '/');
+  document.getElementById('uploadTargetPath').textContent = path;
+
+  // Reset metadata panel
+  resetMetadataPanel();
+
   document.getElementById('uploadModal').style.display = 'flex';
 }
 
@@ -404,10 +416,15 @@ function handleFileSelect(files) {
   queue.style.display = 'block';
   queue.innerHTML = uploadFiles.map((f, i) => `
     <div class="upload-item" id="uploadItem_${i}">
-      <div class="file-icon ${getIconClass(guessTypeFromName(f.name))}" style="width:28px;height:28px;font-size:14px">${getIconSvg(guessTypeFromName(f.name))}</div>
+      <div class="file-icon ${getIconClass(guessTypeFromName(f.name))}"
+           style="width:28px;height:28px;font-size:14px">
+        ${getIconSvg(guessTypeFromName(f.name))}
+      </div>
       <div style="flex:1;min-width:0">
         <div class="upload-item-name">${escHtml(f.name)}</div>
-        <div class="upload-progress"><div class="upload-progress-bar" id="uploadBar_${i}"></div></div>
+        <div class="upload-progress">
+          <div class="upload-progress-bar" id="uploadBar_${i}"></div>
+        </div>
       </div>
       <span class="upload-item-size">${humanSize(f.size)}</span>
     </div>`).join('');
@@ -416,50 +433,272 @@ function handleFileSelect(files) {
 
 async function startUpload() {
   if (!uploadFiles.length) return;
+
+  // Collect & validate metadata before touching any file
+  const sysEntries  = collectSystemMeta();
+  const userEntries = collectUserMeta();
+  if (sysEntries === null || userEntries === null) return; // toast already shown
+
+  const systemJson = sysEntries.length  ? JSON.stringify(sysEntries)  : '';
+  const userJson   = userEntries.length ? JSON.stringify(userEntries) : '';
+
   document.getElementById('uploadStartBtn').disabled = true;
 
   for (let i = 0; i < uploadFiles.length; i++) {
     const file = uploadFiles[i];
-    const bar = document.getElementById(`uploadBar_${i}`);
+    const bar  = document.getElementById(`uploadBar_${i}`);
 
     const formData = new FormData();
-    formData.append('bucket', state.bucket);
-    formData.append('prefix', state.prefix);
-    formData.append('csrf_token', csrf());
-    formData.append('file', file);
+    formData.append('bucket',          state.bucket);
+    formData.append('prefix',          state.prefix);
+    formData.append('csrf_token',      csrf());
+    formData.append('system_metadata', systemJson);
+    formData.append('user_metadata',   userJson);
+    formData.append('file',            file);
 
-    // Simulated progress animation during upload
     let progress = 0;
-    const progressInterval = setInterval(() => {
+    const ticker = setInterval(() => {
       progress = Math.min(progress + Math.random() * 15, 85);
       if (bar) bar.style.width = progress + '%';
     }, 300);
 
     try {
-      const res = await fetch('/api/s3/upload', { method: 'POST', body: formData });
-      clearInterval(progressInterval);
+      const res  = await fetch('/api/s3/upload', { method: 'POST', body: formData });
+      clearInterval(ticker);
       if (bar) bar.style.width = '100%';
-
       const data = await res.json();
       if (res.ok) {
-        showToast(`"${file.name}" uploaded`, 'success');
+        showToast(`"${file.name}" uploaded successfully`, 'success');
       } else {
         showToast(data.detail || `Upload failed: ${file.name}`, 'error');
-        if (bar) bar.style.backgroundColor = 'var(--error)';
+        if (bar) bar.style.background = 'var(--error)';
       }
     } catch (e) {
-      clearInterval(progressInterval);
+      clearInterval(ticker);
       showToast(`Upload failed: ${file.name}`, 'error');
     }
   }
 
-  setTimeout(() => {
-    closeUploadModal();
-    loadObjects();
-  }, 800);
+  setTimeout(() => { closeUploadModal(); loadObjects(); }, 800);
 }
 
-// ── Create Folder ──────────────────────────────────────────────────────────
+// ── Metadata Settings Panel ────────────────────────────────────────────────
+
+/** All allowed system-defined key names (must match backend SYSTEM_METADATA_KEYS). */
+const SYSTEM_KEYS = [
+  'Content-Type',
+  'Cache-Control',
+  'Content-Disposition',
+  'Content-Encoding',
+  'Content-Language',
+  'Expires',
+  'Website-Redirect-Location',
+];
+
+/** Placeholder hints per system key to guide the user. */
+const SYSTEM_KEY_HINTS = {
+  'Content-Type':              'e.g. image/png, application/pdf',
+  'Cache-Control':             'e.g. max-age=86400, no-cache',
+  'Content-Disposition':       'e.g. attachment; filename="file.pdf"',
+  'Content-Encoding':          'e.g. gzip, identity',
+  'Content-Language':          'e.g. en-US, fr',
+  'Expires':                   'e.g. Thu, 01 Jan 2026 00:00:00 GMT',
+  'Website-Redirect-Location': 'e.g. /new-path or https://example.com',
+};
+
+let metaPanelOpen = true;
+
+function toggleMetaPanel() {
+  metaPanelOpen = !metaPanelOpen;
+  const panel = document.getElementById('metaPanel');
+  const btn   = document.getElementById('metaCollapseBtn');
+  panel.style.display = metaPanelOpen ? '' : 'none';
+  btn.classList.toggle('collapsed', !metaPanelOpen);
+  btn.title = metaPanelOpen ? 'Collapse' : 'Expand';
+}
+
+function resetMetadataPanel() {
+  document.getElementById('systemMetaRows').innerHTML = '';
+  document.getElementById('userMetaRows').innerHTML   = '';
+  syncEmptyState('sys');
+  syncEmptyState('usr');
+  // Ensure panel is open
+  metaPanelOpen = true;
+  document.getElementById('metaPanel').style.display = '';
+  document.getElementById('metaCollapseBtn').classList.remove('collapsed');
+}
+
+/** Show/hide the "no rows" empty-state text for a section. */
+function syncEmptyState(section) {
+  const rowsEl = document.getElementById(section === 'sys' ? 'systemMetaRows' : 'userMetaRows');
+  const emptyEl = document.getElementById(section === 'sys' ? 'sysEmpty' : 'usrEmpty');
+  const hasRows = rowsEl.querySelectorAll('.meta-row').length > 0;
+  emptyEl.style.display = hasRows ? 'none' : 'block';
+}
+
+/* ── Remove button SVG (shared) ── */
+const REMOVE_SVG = `<svg width="13" height="13" viewBox="0 0 24 24" fill="none"
+  stroke="currentColor" stroke-width="2.5">
+  <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+</svg>`;
+
+/* ── System-defined row ── */
+function addSystemRow() {
+  const container = document.getElementById('systemMetaRows');
+  const row = document.createElement('div');
+  row.className = 'meta-row sys-row';
+
+  // Build key dropdown
+  const keyOpts = SYSTEM_KEYS.map(k =>
+    `<option value="${k}">${k}</option>`
+  ).join('');
+
+  row.innerHTML = `
+    <select class="sys-key" onchange="onSysKeyChange(this)">
+      <option value="" disabled selected>Select key…</option>
+      ${keyOpts}
+    </select>
+    <input type="text" class="sys-value"
+           placeholder="Select a key first"
+           disabled maxlength="1024" />
+    <button type="button" class="meta-row-remove"
+            onclick="removeRow(this,'sys')" title="Remove">${REMOVE_SVG}</button>`;
+
+  container.appendChild(row);
+  syncEmptyState('sys');
+  row.querySelector('.sys-key').focus();
+}
+
+/** Enable value input and update placeholder when a system key is chosen. */
+function onSysKeyChange(sel) {
+  const row      = sel.closest('.meta-row');
+  const valInput = row.querySelector('.sys-value');
+  const key      = sel.value;
+  valInput.disabled     = false;
+  valInput.placeholder  = SYSTEM_KEY_HINTS[key] || 'Enter value…';
+  // Clear any previous validation error
+  sel.classList.remove('input-error');
+  valInput.classList.remove('input-error');
+  valInput.focus();
+}
+
+/* ── User-defined row ── */
+function addUserRow() {
+  const container = document.getElementById('userMetaRows');
+  const row = document.createElement('div');
+  row.className = 'meta-row usr-row';
+
+  row.innerHTML = `
+    <input type="text" class="usr-key"
+           placeholder="Key (e.g. department)"
+           maxlength="128" />
+    <input type="text" class="usr-value"
+           placeholder="Value (e.g. finance)"
+           maxlength="1024" />
+    <button type="button" class="meta-row-remove"
+            onclick="removeRow(this,'usr')" title="Remove">${REMOVE_SVG}</button>`;
+
+  container.appendChild(row);
+  syncEmptyState('usr');
+  row.querySelector('.usr-key').focus();
+}
+
+function removeRow(btn, section) {
+  btn.closest('.meta-row').remove();
+  syncEmptyState(section);
+}
+
+/* ── Collect & validate system metadata ── */
+function collectSystemMeta() {
+  const rows    = document.querySelectorAll('#systemMetaRows .meta-row');
+  const entries = [];
+  let valid     = true;
+
+  rows.forEach(row => {
+    const keySel = row.querySelector('.sys-key');
+    const valEl  = row.querySelector('.sys-value');
+    const key    = keySel.value.trim();
+    const value  = valEl.value.trim();
+
+    // Clear previous errors
+    keySel.classList.remove('input-error');
+    valEl.classList.remove('input-error');
+
+    if (!key) {
+      keySel.classList.add('input-error');
+      showToast('Please select a key for every system-defined metadata row.', 'error');
+      keySel.focus();
+      valid = false;
+      return;
+    }
+    if (!value) {
+      valEl.classList.add('input-error');
+      showToast(`Value for system metadata key "${key}" cannot be empty.`, 'error');
+      valEl.focus();
+      valid = false;
+      return;
+    }
+    entries.push({ key, value });
+  });
+
+  return valid ? entries : null;
+}
+
+/* ── Collect & validate user metadata ── */
+function collectUserMeta() {
+  const rows    = document.querySelectorAll('#userMetaRows .meta-row');
+  const entries = [];
+  const seen    = new Set();
+  let valid     = true;
+
+  rows.forEach(row => {
+    const keyEl  = row.querySelector('.usr-key');
+    const valEl  = row.querySelector('.usr-value');
+    const key    = keyEl.value.trim();
+    const value  = valEl.value.trim();
+
+    // Clear previous errors
+    keyEl.classList.remove('input-error');
+    valEl.classList.remove('input-error');
+
+    if (!key && !value) return; // skip completely empty rows silently
+
+    if (!key) {
+      keyEl.classList.add('input-error');
+      showToast('User-defined metadata key cannot be empty.', 'error');
+      keyEl.focus();
+      valid = false;
+      return;
+    }
+    if (!/^[a-zA-Z0-9\-_]{1,128}$/.test(key)) {
+      keyEl.classList.add('input-error');
+      showToast(`Key "${key}" is invalid. Use only letters, numbers, hyphens, and underscores.`, 'error');
+      keyEl.focus();
+      valid = false;
+      return;
+    }
+    if (!value) {
+      valEl.classList.add('input-error');
+      showToast(`Value for user metadata key "${key}" cannot be empty.`, 'error');
+      valEl.focus();
+      valid = false;
+      return;
+    }
+    if (seen.has(key.toLowerCase())) {
+      keyEl.classList.add('input-error');
+      showToast(`Duplicate user metadata key "${key}". Each key must be unique.`, 'error');
+      keyEl.focus();
+      valid = false;
+      return;
+    }
+    seen.add(key.toLowerCase());
+    entries.push({ key, value });
+  });
+
+  return valid ? entries : null;
+}
+
+
 function openFolderModal() {
   document.getElementById('folderNameInput').value = '';
   document.getElementById('folderModal').style.display = 'flex';
@@ -543,7 +782,61 @@ async function renameObject() {
   }
 }
 
-// ── Presigned URL ──────────────────────────────────────────────────────────
+// ── Object Info / Metadata Viewer ─────────────────────────────────────────
+async function openInfoModal(key) {
+  document.getElementById('infoModal').style.display = 'flex';
+  const body = document.getElementById('infoModalBody');
+  body.innerHTML = `
+    <div class="loading-content" style="padding:24px 0;">
+      <svg class="spin" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>
+      <span>Loading details...</span>
+    </div>`;
+
+  try {
+    const res = await fetch(
+      `/api/s3/metadata?bucket=${encodeURIComponent(state.bucket)}&key=${encodeURIComponent(key)}`
+    );
+    const data = await res.json();
+    if (!res.ok) {
+      body.innerHTML = `<div class="info-empty">${escHtml(data.detail || 'Failed to load metadata')}</div>`;
+      return;
+    }
+    renderInfoModal(data);
+  } catch (e) {
+    body.innerHTML = `<div class="info-empty">Failed to load object details</div>`;
+  }
+}
+
+function renderInfoModal(data) {
+  const body = document.getElementById('infoModalBody');
+  const customMeta = data.metadata || {};
+  const metaKeys = Object.keys(customMeta);
+
+  let html = `
+    <div class="info-row"><span class="info-row-label">Key</span><span class="info-row-value">${escHtml(data.key)}</span></div>
+    <div class="info-row"><span class="info-row-label">Size</span><span class="info-row-value">${escHtml(data.size_human)}</span></div>
+    <div class="info-row"><span class="info-row-label">Content Type</span><span class="info-row-value">${escHtml(data.content_type)}</span></div>
+    <div class="info-row"><span class="info-row-label">Storage Class</span><span class="info-row-value">${escHtml(data.storage_class)}</span></div>
+    <div class="info-row"><span class="info-row-label">ETag</span><span class="info-row-value">${escHtml(data.etag)}</span></div>
+  `;
+
+  html += `<div class="info-section-title">Custom Metadata</div>`;
+  if (!metaKeys.length) {
+    html += `<div class="info-empty">No custom metadata was set for this object.</div>`;
+  } else {
+    metaKeys.forEach(k => {
+      html += `<div class="info-row"><span class="info-row-label">${escHtml(k)}</span><span class="info-row-value">${escHtml(customMeta[k])}</span></div>`;
+    });
+  }
+
+  body.innerHTML = html;
+}
+
+function closeInfoModal() {
+  document.getElementById('infoModal').style.display = 'none';
+}
+
+
 async function openPresignModal(key) {
   showLoading('Generating URL...');
   try {
@@ -589,10 +882,12 @@ function showContextMenu(event, itemJson) {
   menu.style.left = x + 'px';
   menu.style.top = y + 'px';
 
-  // Hide download/presign for folders
+  // Hide download/presign/info for folders
   const isFolder = item.type === 'folder';
-  menu.querySelectorAll('button')[0].style.display = isFolder ? 'none' : 'flex'; // download
-  menu.querySelectorAll('button')[2].style.display = isFolder ? 'none' : 'flex'; // copy url
+  const buttons = menu.querySelectorAll('button');
+  buttons[0].style.display = isFolder ? 'none' : 'flex'; // download
+  buttons[2].style.display = isFolder ? 'none' : 'flex'; // copy url
+  buttons[3].style.display = isFolder ? 'none' : 'flex'; // view info
 }
 
 function hideContextMenu() {
@@ -611,6 +906,11 @@ function ctxRename() {
 
 function ctxPresign() {
   if (state.ctxTarget) openPresignModal(state.ctxTarget.key);
+  hideContextMenu();
+}
+
+function ctxMetadata() {
+  if (state.ctxTarget) openInfoModal(state.ctxTarget.key);
   hideContextMenu();
 }
 
@@ -676,6 +976,12 @@ function escHtml(str) {
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&#39;');
+}
+
+function escAttr(str) {
+  // Same escaping as escHtml; kept distinct for readability at call sites
+  // where the value is inserted into an HTML attribute (e.g. input value=).
+  return escHtml(str);
 }
 
 function humanSize(bytes) {
