@@ -14,3 +14,4 @@ from .s3_service import (
     get_object_metadata,
     search_objects,
 )
+from . import metadata_service

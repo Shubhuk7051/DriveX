@@ -311,7 +311,11 @@ def validate_user_metadata(raw: Optional[str]) -> dict:
             raise HTTPException(status_code=400,
                 detail="Combined user metadata exceeds the 2 KB S3 limit.")
 
-        clean[key.lower()] = value   # S3 normalises metadata keys to lowercase
+        lowered = key.lower()
+        if lowered in clean:
+            raise HTTPException(status_code=400,
+                detail=f"Duplicate user metadata key '{key}'. Each key must appear only once.")
+        clean[lowered] = value   # S3 normalises metadata keys to lowercase
 
     return clean
 

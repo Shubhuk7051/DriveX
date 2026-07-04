@@ -48,6 +48,8 @@ document.addEventListener('DOMContentLoaded', () => {
       closeRenameModal();
       closePresignModal();
       closeInfoModal();
+      closeEditMetaModal();
+      closeEmConfirm();
     }
   });
 });
@@ -213,6 +215,9 @@ function renderListView(folders, files) {
               </button>
               <button class="row-action-btn" onclick="openInfoModal('${escHtml(item.key)}')" title="View Info">
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
+              </button>
+              <button class="row-action-btn" onclick="openEditMetaModal('${escHtml(item.key)}')" title="Edit Metadata">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z"/><line x1="7" y1="7" x2="7.01" y2="7"/></svg>
               </button>
             `}
             <button class="row-action-btn" onclick="openRenameModal('${escHtml(item.key)}', '${escHtml(item.name)}')" title="Rename">
@@ -876,18 +881,18 @@ function showContextMenu(event, itemJson) {
   const menu = document.getElementById('contextMenu');
   menu.style.display = 'block';
 
-  // Position near cursor, keep in viewport
-  const x = Math.min(event.clientX, window.innerWidth - 180);
-  const y = Math.min(event.clientY, window.innerHeight - 200);
+  const x = Math.min(event.clientX, window.innerWidth - 200);
+  const y = Math.min(event.clientY, window.innerHeight - 220);
   menu.style.left = x + 'px';
-  menu.style.top = y + 'px';
+  menu.style.top  = y + 'px';
 
-  // Hide download/presign/info for folders
-  const isFolder = item.type === 'folder';
-  const buttons = menu.querySelectorAll('button');
-  buttons[0].style.display = isFolder ? 'none' : 'flex'; // download
-  buttons[2].style.display = isFolder ? 'none' : 'flex'; // copy url
-  buttons[3].style.display = isFolder ? 'none' : 'flex'; // view info
+  // buttons: [0]=download [1]=rename [2]=presign [3]=viewInfo [4]=editMeta [divider] [5]=delete
+  const isFolder  = item.type === 'folder';
+  const btns      = menu.querySelectorAll('button');
+  btns[0].style.display = isFolder ? 'none' : 'flex'; // download
+  btns[2].style.display = isFolder ? 'none' : 'flex'; // copy url
+  btns[3].style.display = isFolder ? 'none' : 'flex'; // view info
+  btns[4].style.display = isFolder ? 'none' : 'flex'; // edit metadata
 }
 
 function hideContextMenu() {
@@ -909,8 +914,13 @@ function ctxPresign() {
   hideContextMenu();
 }
 
-function ctxMetadata() {
+function ctxViewInfo() {
   if (state.ctxTarget) openInfoModal(state.ctxTarget.key);
+  hideContextMenu();
+}
+
+function ctxEditMetadata() {
+  if (state.ctxTarget) openEditMetaModal(state.ctxTarget.key);
   hideContextMenu();
 }
 
@@ -1006,4 +1016,381 @@ function guessTypeFromName(name) {
     if (exts.includes(ext)) return type;
   }
   return 'file';
+}
+
+// ══ Edit Metadata ══════════════════════════════════════════════════════════
+
+/** Tracks which object key is currently being edited. */
+let emCurrentKey   = null;
+let emPanelIsOpen  = true;
+
+/**
+ * Open the Edit Metadata modal for a file object.
+ * Fetches current metadata from the backend, then populates all rows.
+ */
+async function openEditMetaModal(key) {
+  // Always reset to clean state first — this is the guard against the
+  // "still buffering" bug where a previous successful save left buttons
+  // in the em-disabled state and the spinner still showing.
+  closeEditMetaModal();
+
+  emCurrentKey = key;
+
+  // Show modal in loading state
+  const modal = document.getElementById('editMetaModal');
+  modal.style.display = 'flex';
+  document.getElementById('emLoadingState').style.display = 'flex';
+  document.getElementById('emPropsCard').style.display    = 'none';
+  document.getElementById('emMetaCard').style.display     = 'none';
+  document.getElementById('emSaveBtn').style.display      = 'none';
+  document.getElementById('emObjectName').textContent     = key.split('/').pop();
+
+  try {
+    const res = await fetch(
+      `/api/s3/metadata?bucket=${encodeURIComponent(state.bucket)}&key=${encodeURIComponent(key)}`
+    );
+    if (!res.ok) {
+      const err = await res.json();
+      document.getElementById('emLoadingState').innerHTML =
+        `<span style="color:var(--error);padding:24px 0;">${escHtml(err.detail || 'Failed to load metadata')}</span>`;
+      return;
+    }
+    const data = await res.json();
+    emPopulate(data);
+  } catch (e) {
+    document.getElementById('emLoadingState').innerHTML =
+      `<span style="color:var(--error);padding:24px 0;">Network error — could not load metadata.</span>`;
+  }
+}
+
+/** Populate modal with object properties and pre-fill metadata rows. */
+function emPopulate(data) {
+  // Object Properties
+  document.getElementById('emPropName').textContent        = data.name        || data.key;
+  document.getElementById('emPropBucket').textContent      = data.bucket      || state.bucket;
+  document.getElementById('emPropSize').textContent        = data.size_human  || '-';
+  document.getElementById('emPropModified').textContent    = data.last_modified_human || '-';
+  document.getElementById('emPropStorageClass').textContent= data.storage_class || 'STANDARD';
+  document.getElementById('emPropEtag').textContent        = data.etag        || '-';
+
+  // System-defined rows (pre-populated from current metadata)
+  (data.system_metadata || []).forEach(entry => {
+    emAddSystemRow(entry.key, entry.value);
+  });
+
+  // User-defined rows (pre-populated from current metadata)
+  (data.user_metadata || []).forEach(entry => {
+    emAddUserRow(entry.key, entry.value);
+  });
+
+  // Switch to populated state
+  document.getElementById('emLoadingState').style.display = 'none';
+  document.getElementById('emPropsCard').style.display    = 'block';
+  document.getElementById('emMetaCard').style.display     = 'block';
+  document.getElementById('emSaveBtn').style.display      = 'flex';
+}
+
+function closeEditMetaModal() {
+  document.getElementById('editMetaModal').style.display = 'none';
+  emCurrentKey   = null;
+  emPanelIsOpen  = true;
+
+  // ── Re-enable every control that emExecuteSave may have disabled ──────
+  // This is the root cause of the "still buffering after save" bug:
+  // em-disabled was added during save but never removed on the success path
+  // because closeEditMetaModal was called before re-enabling.
+  const btnIds = ['emSaveBtn', 'emCancelBtn', 'emCloseBtn', 'emAddSysBtn', 'emAddUsrBtn'];
+  btnIds.forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.classList.remove('em-disabled');
+  });
+
+  // Restore the save button to its original label (in case spinner is showing)
+  const saveBtn = document.getElementById('emSaveBtn');
+  if (saveBtn) {
+    saveBtn.innerHTML = `
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/>
+        <polyline points="17 21 17 13 7 13 7 21"/>
+        <polyline points="7 3 7 8 15 8"/>
+      </svg>
+      Save Changes`;
+    saveBtn.style.display = 'none'; // hidden until emPopulate shows it
+  }
+
+  // Clear metadata rows and reset panel visibility
+  document.getElementById('emSystemRows').innerHTML = '';
+  document.getElementById('emUserRows').innerHTML   = '';
+  emSyncEmpty('sys');
+  emSyncEmpty('usr');
+
+  // Reset the collapse button
+  const collapseBtn = document.getElementById('emCollapseBtn');
+  if (collapseBtn) collapseBtn.classList.remove('collapsed');
+  const panel = document.getElementById('emMetaPanel');
+  if (panel) panel.style.display = '';
+
+  // Clear pending save data
+  document._emPendingSys  = null;
+  document._emPendingUser = null;
+}
+
+function toggleEmPanel() {
+  emPanelIsOpen = !emPanelIsOpen;
+  const panel = document.getElementById('emMetaPanel');
+  const btn   = document.getElementById('emCollapseBtn');
+  panel.style.display = emPanelIsOpen ? '' : 'none';
+  btn.classList.toggle('collapsed', !emPanelIsOpen);
+}
+
+function emSyncEmpty(section) {
+  const rowsId  = section === 'sys' ? 'emSystemRows' : 'emUserRows';
+  const emptyId = section === 'sys' ? 'emSysEmpty'   : 'emUsrEmpty';
+  const hasRows = document.getElementById(rowsId).querySelectorAll('.meta-row').length > 0;
+  document.getElementById(emptyId).style.display = hasRows ? 'none' : 'block';
+}
+
+/** Add a system-defined row to the Edit Metadata modal, optionally pre-filled. */
+function emAddSystemRow(preKey = '', preValue = '') {
+  const container = document.getElementById('emSystemRows');
+
+  // Check for duplicate key before adding
+  if (preKey) {
+    const existing = [...container.querySelectorAll('.sys-key')].some(s => s.value === preKey);
+    if (existing) return; // silently skip duplicate (happens on re-populate)
+  }
+
+  const row = document.createElement('div');
+  row.className = 'meta-row sys-row';
+
+  const keyOpts = SYSTEM_KEYS.map(k =>
+    `<option value="${k}" ${k === preKey ? 'selected' : ''}>${k}</option>`
+  ).join('');
+
+  const valueDisabled = preKey ? '' : 'disabled';
+  const placeholder   = preKey ? (SYSTEM_KEY_HINTS[preKey] || 'Enter value…') : 'Select a key first';
+
+  row.innerHTML = `
+    <select class="sys-key" onchange="emOnSysKeyChange(this)">
+      <option value="" disabled ${!preKey ? 'selected' : ''}>Select key…</option>
+      ${keyOpts}
+    </select>
+    <input type="text" class="sys-value"
+           placeholder="${escAttr(placeholder)}"
+           value="${escAttr(preValue)}"
+           ${valueDisabled} maxlength="1024" />
+    <button type="button" class="meta-row-remove"
+            onclick="emRemoveRow(this,'sys')" title="Remove">${REMOVE_SVG}</button>`;
+
+  container.appendChild(row);
+  emSyncEmpty('sys');
+}
+
+function emOnSysKeyChange(sel) {
+  // Prevent duplicate system keys
+  const container  = document.getElementById('emSystemRows');
+  const allSelects = [...container.querySelectorAll('.sys-key')].filter(s => s !== sel);
+  const chosen     = sel.value;
+  if (allSelects.some(s => s.value === chosen)) {
+    showToast(`"${chosen}" is already set. Remove the existing row first.`, 'error');
+    sel.value = '';
+    return;
+  }
+  const row      = sel.closest('.meta-row');
+  const valInput = row.querySelector('.sys-value');
+  valInput.disabled    = false;
+  valInput.placeholder = SYSTEM_KEY_HINTS[chosen] || 'Enter value…';
+  sel.classList.remove('input-error');
+  valInput.classList.remove('input-error');
+  valInput.focus();
+}
+
+/** Add a user-defined row to the Edit Metadata modal, optionally pre-filled. */
+function emAddUserRow(preKey = '', preValue = '') {
+  const container = document.getElementById('emUserRows');
+  const row = document.createElement('div');
+  row.className = 'meta-row usr-row';
+  row.innerHTML = `
+    <input type="text" class="usr-key"
+           placeholder="Key (e.g. department)"
+           value="${escAttr(preKey)}"
+           maxlength="128" />
+    <input type="text" class="usr-value"
+           placeholder="Value (e.g. finance)"
+           value="${escAttr(preValue)}"
+           maxlength="1024" />
+    <button type="button" class="meta-row-remove"
+            onclick="emRemoveRow(this,'usr')" title="Remove">${REMOVE_SVG}</button>`;
+  container.appendChild(row);
+  emSyncEmpty('usr');
+}
+
+function emRemoveRow(btn, section) {
+  btn.closest('.meta-row').remove();
+  emSyncEmpty(section);
+}
+
+/** Collect + validate system rows; return [{key,value}] array or null on error. */
+function emCollectSystemMeta() {
+  const rows    = document.querySelectorAll('#emSystemRows .meta-row');
+  const entries = [];
+  const seen    = new Set();
+  let valid     = true;
+
+  rows.forEach(row => {
+    const keySel = row.querySelector('.sys-key');
+    const valEl  = row.querySelector('.sys-value');
+    const key    = keySel.value.trim();
+    const value  = valEl.value.trim();
+
+    keySel.classList.remove('input-error');
+    valEl.classList.remove('input-error');
+
+    if (!key) {
+      keySel.classList.add('input-error');
+      showToast('Please select a key for every system-defined metadata row.', 'error');
+      keySel.focus(); valid = false; return;
+    }
+    if (seen.has(key)) {
+      keySel.classList.add('input-error');
+      showToast(`Duplicate system key "${key}". Each key may only appear once.`, 'error');
+      keySel.focus(); valid = false; return;
+    }
+    if (!value) {
+      valEl.classList.add('input-error');
+      showToast(`Value for "${key}" cannot be empty.`, 'error');
+      valEl.focus(); valid = false; return;
+    }
+
+    // Validate Expires format if set
+    if (key === 'Expires' && isNaN(Date.parse(value))) {
+      valEl.classList.add('input-error');
+      showToast('Expires must be a valid date/time (e.g. Thu, 01 Jan 2026 00:00:00 GMT).', 'error');
+      valEl.focus(); valid = false; return;
+    }
+
+    seen.add(key);
+    entries.push({ key, value });
+  });
+
+  return valid ? entries : null;
+}
+
+/** Collect + validate user-defined rows; return [{key,value}] array or null on error. */
+function emCollectUserMeta() {
+  const rows    = document.querySelectorAll('#emUserRows .meta-row');
+  const entries = [];
+  const seen    = new Set();
+  let valid     = true;
+  let totalSize = 0;
+
+  rows.forEach(row => {
+    const keyEl = row.querySelector('.usr-key');
+    const valEl = row.querySelector('.usr-value');
+    const key   = keyEl.value.trim();
+    const value = valEl.value.trim();
+
+    keyEl.classList.remove('input-error');
+    valEl.classList.remove('input-error');
+
+    if (!key && !value) return; // skip empty rows silently
+
+    if (!key) {
+      keyEl.classList.add('input-error');
+      showToast('User-defined metadata key cannot be empty.', 'error');
+      keyEl.focus(); valid = false; return;
+    }
+    if (!/^[a-zA-Z0-9\-_]{1,128}$/.test(key)) {
+      keyEl.classList.add('input-error');
+      showToast(`Key "${key}": use only letters, numbers, hyphens, and underscores (max 128 chars).`, 'error');
+      keyEl.focus(); valid = false; return;
+    }
+    if (seen.has(key.toLowerCase())) {
+      keyEl.classList.add('input-error');
+      showToast(`Duplicate user metadata key "${key}".`, 'error');
+      keyEl.focus(); valid = false; return;
+    }
+    if (!value) {
+      valEl.classList.add('input-error');
+      showToast(`Value for "${key}" cannot be empty.`, 'error');
+      valEl.focus(); valid = false; return;
+    }
+    totalSize += key.length + value.length;
+    if (totalSize > 2048) {
+      valEl.classList.add('input-error');
+      showToast('Combined user metadata exceeds the 2 KB S3 limit.', 'error');
+      valid = false; return;
+    }
+
+    seen.add(key.toLowerCase());
+    entries.push({ key, value });
+  });
+
+  return valid ? entries : null;
+}
+
+/** Show confirmation modal before saving. */
+function emRequestSave() {
+  const sysEntries  = emCollectSystemMeta();
+  const userEntries = emCollectUserMeta();
+  if (sysEntries === null || userEntries === null) return; // toast already shown
+
+  // Store validated entries for when confirm is clicked
+  document._emPendingSys  = sysEntries;
+  document._emPendingUser = userEntries;
+
+  document.getElementById('emConfirmModal').style.display = 'flex';
+  document.getElementById('emConfirmOkBtn').onclick = emExecuteSave;
+}
+
+function closeEmConfirm() {
+  document.getElementById('emConfirmModal').style.display = 'none';
+}
+
+/** Actually call the PUT /api/s3/metadata endpoint. */
+async function emExecuteSave() {
+  closeEmConfirm();
+
+  const sysEntries  = document._emPendingSys  || [];
+  const userEntries = document._emPendingUser || [];
+
+  // Disable all controls while saving
+  const saveBtn   = document.getElementById('emSaveBtn');
+  const cancelBtn = document.getElementById('emCancelBtn');
+  const closeBtn  = document.getElementById('emCloseBtn');
+  const addSysBtn = document.getElementById('emAddSysBtn');
+  const addUsrBtn = document.getElementById('emAddUsrBtn');
+  [saveBtn, cancelBtn, closeBtn, addSysBtn, addUsrBtn].forEach(b => b && b.classList.add('em-disabled'));
+
+  // Show spinner on save button
+  const origSaveBtnHTML = saveBtn.innerHTML;
+  saveBtn.innerHTML = `<svg class="spin" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg> Updating metadata…`;
+
+  const formData = new FormData();
+  formData.append('bucket',          state.bucket);
+  formData.append('key',             emCurrentKey);
+  formData.append('csrf_token',      csrf());
+  formData.append('system_metadata', sysEntries.length  ? JSON.stringify(sysEntries)  : '');
+  formData.append('user_metadata',   userEntries.length ? JSON.stringify(userEntries) : '');
+
+  try {
+    const res  = await fetch('/api/s3/metadata', { method: 'PUT', body: formData });
+    const data = await res.json();
+
+    if (res.ok) {
+      showToast('✅ Metadata updated successfully.', 'success');
+      closeEditMetaModal();
+      // Refresh the file list so the updated metadata is reflected in View Info
+      loadObjects();
+    } else {
+      // Show friendly error, re-enable controls
+      showToast(data.detail || 'Failed to update metadata.', 'error');
+      [saveBtn, cancelBtn, closeBtn, addSysBtn, addUsrBtn].forEach(b => b && b.classList.remove('em-disabled'));
+      saveBtn.innerHTML = origSaveBtnHTML;
+    }
+  } catch (e) {
+    showToast('Network error — metadata update failed.', 'error');
+    [saveBtn, cancelBtn, closeBtn, addSysBtn, addUsrBtn].forEach(b => b && b.classList.remove('em-disabled'));
+    saveBtn.innerHTML = origSaveBtnHTML;
+  }
 }

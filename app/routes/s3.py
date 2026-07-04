@@ -20,7 +20,7 @@ from app.security import (
     audit_log,
     validate_csrf_token,
 )
-from app.services import s3_service
+from app.services import s3_service, metadata_service
 
 router = APIRouter()
 
@@ -384,7 +384,7 @@ async def move_object(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-# --- Metadata ---
+# --- Metadata GET (object properties + structured system/user metadata) ---
 
 @router.get("/metadata")
 async def get_metadata(
@@ -392,15 +392,70 @@ async def get_metadata(
     bucket: str,
     key: str,
 ):
-    """Get metadata for an S3 object."""
+    """
+    Return object properties AND split metadata (system-defined + user-defined).
+    Used by both the View Info panel and the new Edit Metadata modal.
+    """
     creds, allowed = _get_creds_and_buckets(request)
     bucket = validate_bucket_name(bucket, allowed)
-    key = validate_s3_key(urllib.parse.unquote(key))
+    key    = validate_s3_key(urllib.parse.unquote(key))
 
     try:
-        meta = s3_service.get_object_metadata(creds, bucket, key)
-        return JSONResponse(meta)
+        data = metadata_service.get_full_object_metadata(creds, bucket, key)
+        return JSONResponse(data)
     except HTTPException:
         raise
     except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# --- Metadata PUT (replace via CopyObject MetadataDirective=REPLACE) --------
+
+@router.put("/metadata")
+async def update_metadata(
+    request: Request,
+    bucket: str         = Form(...),
+    key: str            = Form(...),
+    csrf_token: str     = Form(...),
+    system_metadata: str = Form(""),  # JSON array [{key, value}, …]
+    user_metadata: str  = Form(""),   # JSON array [{key, value}, …]
+):
+    """
+    Replace S3 object metadata using CopyObject with MetadataDirective=REPLACE.
+    Object data is preserved; only metadata headers change.
+
+    Both system_metadata and user_metadata are validated server-side before
+    any AWS call is made. Credentials are never exposed to the frontend.
+    """
+    _check_csrf(request, csrf_token)
+    creds, allowed = _get_creds_and_buckets(request)
+    bucket = validate_bucket_name(bucket, allowed)
+    key    = validate_s3_key(urllib.parse.unquote(key))
+
+    # Server-side validation (raises HTTPException on bad input)
+    sys_args  = validate_system_metadata(system_metadata)
+    user_meta = validate_user_metadata(user_metadata)
+
+    try:
+        result = metadata_service.replace_object_metadata(
+            creds, bucket, key,
+            system_extra_args=sys_args,
+            user_metadata=user_meta,
+        )
+        audit_log(
+            request, "UPDATE_METADATA", bucket=bucket, key=key,
+            detail=f"sys_keys={result['sys_keys']} user_keys={result['user_keys']}",
+        )
+        return JSONResponse({
+            "success": True,
+            "message": "Metadata updated successfully.",
+            "key":     key,
+        })
+    except HTTPException:
+        raise
+    except Exception as e:
+        audit_log(
+            request, "UPDATE_METADATA", bucket=bucket, key=key,
+            status="FAILURE", detail=str(e),
+        )
         raise HTTPException(status_code=500, detail=str(e))
