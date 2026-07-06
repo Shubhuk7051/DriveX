@@ -37,8 +37,17 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   }
 
-  // Close context menu on outside click
-  document.addEventListener('click', () => hideContextMenu());
+  // Close context menu on outside click — but NOT when the click originated
+  // inside the menu itself or on a dots-button (which opens it).
+  document.addEventListener('click', (e) => {
+    const menu = document.getElementById('contextMenu');
+    if (!menu || !menu.classList.contains('ctx-open')) return;
+    // Keep open if click is inside the menu
+    if (menu.contains(e.target)) return;
+    // Keep open if click is on a dots button (showContextMenuFromBtn handles it)
+    if (e.target.closest('.row-dots-btn, .grid-dots-btn')) return;
+    hideContextMenu();
+  });
   document.addEventListener('keydown', e => {
     if (e.key === 'Escape') {
       hideContextMenu();
@@ -50,6 +59,7 @@ document.addEventListener('DOMContentLoaded', () => {
       closeInfoModal();
       closeEditMetaModal();
       closeEmConfirm();
+      closeDestPicker();
     }
   });
 });
@@ -185,47 +195,80 @@ function renderListView(folders, files) {
     return;
   }
 
-  const rows = [...folders, ...files].map(item => {
-    const iconCls = getIconClass(item.type);
-    const icon = getIconSvg(item.type);
+  // Store items in a lookup so onclick handlers can reference by index
+  // instead of embedding JSON inside HTML attributes (which breaks on encode/decode).
+  window._driveXItems = window._driveXItems || {};
+  const ns = 'lv_' + Date.now();
+
+  const rows = [...folders, ...files].map((item, idx) => {
+    const iconCls  = getIconClass(item.type);
+    const icon     = getIconSvg(item.type);
     const isFolder = item.type === 'folder';
-    const onClick = isFolder
-      ? `navigateTo('${escHtml(item.key)}')`
-      : '';
+    const k        = escHtml(item.key);
+    const n        = escHtml(item.name);
+    const ref      = `${ns}_${idx}`;
+    window._driveXItems[ref] = item;   // safe reference, no serialisation needed
+
+    const fileButtons = isFolder ? '' : `
+      <button class="act-btn" title="Open"
+        onclick="event.stopPropagation();openFile('${k}')">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
+        Open
+      </button>
+      <button class="act-btn" title="Download"
+        onclick="event.stopPropagation();downloadFile('${k}')">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+        Download
+      </button>
+      <button class="act-btn" title="Copy URL"
+        onclick="event.stopPropagation();openPresignModal('${k}')">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
+        Copy URL
+      </button>
+      <button class="act-btn" title="Edit Metadata"
+        onclick="event.stopPropagation();openEditMetaModal('${k}')">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z"/><line x1="7" y1="7" x2="7.01" y2="7"/></svg>
+        Metadata
+      </button>`;
+
+    const sharedButtons = `
+      <button class="act-btn" title="Copy"
+        onclick="event.stopPropagation();openDestPicker('copy', window._driveXItems['${ref}'])">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+        Copy
+      </button>
+      <button class="act-btn" title="Move"
+        onclick="event.stopPropagation();openDestPicker('move', window._driveXItems['${ref}'])">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="5 9 2 12 5 15"/><polyline points="9 5 12 2 15 5"/><line x1="2" y1="12" x2="22" y2="12"/><line x1="12" y1="2" x2="12" y2="22"/></svg>
+        Move
+      </button>
+      <button class="act-btn act-danger" title="Delete"
+        onclick="event.stopPropagation();confirmDelete('${k}', ${isFolder})">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>
+        Delete
+      </button>`;
+
+    const navClick = isFolder
+      ? `ondblclick="navigateTo('${k}')" onclick="event.stopPropagation();selectRow(this)"`
+      : `ondblclick="openFile('${k}')"   onclick="event.stopPropagation();selectRow(this)"`;
 
     return `
-      <tr oncontextmenu="showContextMenu(event, ${JSON.stringify(JSON.stringify(item))})">
+      <tr class="file-row" ${navClick}
+          data-key="${escAttr(item.key)}" data-item="${escAttr(JSON.stringify(item))}">
         <td>
-          <div class="file-name-cell" ${onClick ? `onclick="${onClick}"` : ''} ${isFolder ? 'style="cursor:pointer;"' : ''}>
+          <div class="file-name-cell"
+            ${isFolder ? `style="cursor:pointer" onclick="event.stopPropagation();navigateTo('${k}')"` : ''}>
             <div class="file-icon ${iconCls}">${icon}</div>
-            <span class="file-name-text" title="${escHtml(item.name)}">${escHtml(item.name)}</span>
+            <span class="file-name-text" title="${escHtml(item.key)}">${n}</span>
           </div>
         </td>
         <td class="file-size">${item.size_human || '-'}</td>
         <td class="file-date">${item.last_modified_human || '-'}</td>
         <td><span class="file-type-badge">${item.type}</span></td>
-        <td>
-          <div class="row-actions">
-            ${isFolder ? '' : `
-              <button class="row-action-btn" onclick="downloadFile('${escHtml(item.key)}')" title="Download">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-              </button>
-              <button class="row-action-btn" onclick="openPresignModal('${escHtml(item.key)}')" title="Copy URL">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
-              </button>
-              <button class="row-action-btn" onclick="openInfoModal('${escHtml(item.key)}')" title="View Info">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
-              </button>
-              <button class="row-action-btn" onclick="openEditMetaModal('${escHtml(item.key)}')" title="Edit Metadata">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z"/><line x1="7" y1="7" x2="7.01" y2="7"/></svg>
-              </button>
-            `}
-            <button class="row-action-btn" onclick="openRenameModal('${escHtml(item.key)}', '${escHtml(item.name)}')" title="Rename">
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
-            </button>
-            <button class="row-action-btn danger" onclick="confirmDelete('${escHtml(item.key)}', ${isFolder})" title="Delete">
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>
-            </button>
+        <td class="col-actions">
+          <div class="act-group">
+            ${fileButtons}
+            ${sharedButtons}
           </div>
         </td>
       </tr>`;
@@ -235,26 +278,37 @@ function renderListView(folders, files) {
 }
 
 function renderGridView(folders, files) {
-  const grid = document.getElementById('gridView');
+  const grid  = document.getElementById('gridView');
   const items = [...folders, ...files];
   if (!items.length) { grid.innerHTML = ''; return; }
 
   grid.innerHTML = items.map(item => {
-    const iconCls = getIconClass(item.type);
-    const icon = getIconSvg(item.type);
+    const iconCls  = getIconClass(item.type);
+    const icon     = getIconSvg(item.type);
     const isFolder = item.type === 'folder';
-    const onClick = isFolder ? `navigateTo('${escHtml(item.key)}')` : `downloadFile('${escHtml(item.key)}')`;
+    const itemJson = JSON.stringify(JSON.stringify(item));
+    const onDblClick = isFolder
+      ? `navigateTo('${escHtml(item.key)}')`
+      : `openFile('${escHtml(item.key)}')`;
 
     return `
-      <div class="grid-item" onclick="${onClick}">
-        <div class="grid-actions" onclick="event.stopPropagation()">
-          <button class="icon-btn" style="padding:4px" onclick="openRenameModal('${escHtml(item.key)}','${escHtml(item.name)}')" title="Rename">
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
-          </button>
-          <button class="icon-btn" style="padding:4px;color:var(--error)" onclick="confirmDelete('${escHtml(item.key)}',${isFolder})" title="Delete">
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>
-          </button>
-        </div>
+      <div
+        class="grid-item"
+        ondblclick="${onDblClick}"
+        onclick="selectGridItem(this)"
+        oncontextmenu="showContextMenu(event, ${itemJson})"
+        data-key="${escAttr(item.key)}"
+        data-item="${escAttr(JSON.stringify(item))}"
+      >
+        <button
+          class="grid-dots-btn"
+          title="More actions"
+          onclick="event.stopPropagation(); showContextMenuFromBtn(event, ${itemJson}, this)"
+        >
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+            <circle cx="12" cy="5" r="1.2"/><circle cx="12" cy="12" r="1.2"/><circle cx="12" cy="19" r="1.2"/>
+          </svg>
+        </button>
         <div class="grid-icon ${iconCls}">${icon}</div>
         <div class="grid-name" title="${escHtml(item.name)}">${escHtml(item.name)}</div>
         <div class="grid-meta">${item.size_human || (isFolder ? 'Folder' : '-')}</div>
@@ -312,8 +366,11 @@ async function runSearch(query) {
       tbody.innerHTML = `<tr><td colspan="5" style="text-align:center;padding:32px;color:var(--text-muted)">No files found matching "${escHtml(query)}"</td></tr>`;
       return;
     }
-    tbody.innerHTML = data.results.map(r => `
-      <tr>
+    tbody.innerHTML = data.results.map(r => {
+      const k = escHtml(r.key);
+      return `
+      <tr class="file-row" ondblclick="openFile('${k}')" onclick="selectRow(this)"
+          data-key="${escAttr(r.key)}" data-item="${escAttr(JSON.stringify(r))}">
         <td>
           <div class="file-name-cell">
             <div class="file-icon ${getIconClass(r.type)}">${getIconSvg(r.type)}</div>
@@ -323,15 +380,24 @@ async function runSearch(query) {
         <td><span class="file-type-badge">${r.bucket}</span></td>
         <td class="file-size">${r.size_human}</td>
         <td class="file-date">${r.last_modified_human}</td>
-        <td>
-          <div class="row-actions" style="opacity:1">
-            <button class="row-action-btn" onclick="downloadFile('${escHtml(r.key)}')">
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+        <td class="col-actions">
+          <div class="act-group">
+            <button class="act-btn" title="Open"     onclick="event.stopPropagation();openFile('${k}')">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
+              Open
+            </button>
+            <button class="act-btn" title="Download" onclick="event.stopPropagation();downloadFile('${k}', '${escHtml(r.bucket)}')">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
               Download
+            </button>
+            <button class="act-danger act-btn" title="Delete" onclick="event.stopPropagation();confirmDelete('${k}', false)">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>
+              Delete
             </button>
           </div>
         </td>
-      </tr>`).join('');
+      </tr>`;
+    }).join('');
   } catch (e) {
     showToast('Search failed', 'error');
   } finally {
@@ -347,14 +413,12 @@ function clearSearch() {
 
 // ── File Operations ────────────────────────────────────────────────────────
 
-function downloadFile(key) {
-  const url = `/api/s3/download?bucket=${encodeURIComponent(state.bucket)}&key=${encodeURIComponent(key)}`;
-  const a = document.createElement('a');
-  a.href = url;
-  a.style.display = 'none';
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
+function downloadFile(key, bucket) {
+  const b   = bucket || state.bucket;
+  const url = `/api/s3/download?bucket=${encodeURIComponent(b)}&key=${encodeURIComponent(key)}`;
+  const a   = document.createElement('a');
+  a.href = url; a.style.display = 'none';
+  document.body.appendChild(a); a.click(); document.body.removeChild(a);
   showToast('Download started', 'success');
 }
 
@@ -872,74 +936,349 @@ function copyPresignUrl() {
   navigator.clipboard.writeText(url).then(() => showToast('URL copied to clipboard', 'success'));
 }
 
+// ── Row selection ──────────────────────────────────────────────────────────
+function selectRow(tr) {
+  document.querySelectorAll('.file-row.selected').forEach(r => r.classList.remove('selected'));
+  tr.classList.add('selected');
+  // Load ctxTarget from data attribute so keyboard actions work
+  try { state.ctxTarget = JSON.parse(tr.dataset.item); } catch(_) {}
+}
+
+function selectGridItem(el) {
+  document.querySelectorAll('.grid-item.selected').forEach(r => r.classList.remove('selected'));
+  el.classList.add('selected');
+  try { state.ctxTarget = JSON.parse(el.dataset.item); } catch(_) {}
+}
+
+// ── Open file in new tab (via pre-signed URL) ──────────────────────────────
+async function openFile(key, bucket) {
+  const b = bucket || state.bucket;
+  try {
+    const res  = await fetch(
+      `/api/s3/presign?bucket=${encodeURIComponent(b)}&key=${encodeURIComponent(key)}&expiry=3600`
+    );
+    const data = await res.json();
+    if (res.ok) {
+      window.open(data.url, '_blank', 'noopener');
+    } else {
+      showToast(data.detail || 'Could not open file', 'error');
+    }
+  } catch(_) {
+    showToast('Network error opening file', 'error');
+  }
+}
+
 // ── Context Menu ───────────────────────────────────────────────────────────
+
+/**
+ * Show menu triggered by right-click on a row / grid item.
+ * Positions the menu so it never overflows the viewport.
+ */
 function showContextMenu(event, itemJson) {
   event.preventDefault();
-  const item = JSON.parse(itemJson);
-  state.ctxTarget = item;
+  event.stopPropagation();
+  _openContextMenu(event.clientX, event.clientY, JSON.parse(itemJson));
+}
 
-  const menu = document.getElementById('contextMenu');
+/**
+ * Show menu triggered by the ⋮ button click.
+ * Accepts the button element directly because event.currentTarget is null
+ * inside inline onclick="" attribute handlers (it is always window/null there).
+ * Positions the menu below-left of the button so it doesn't overflow right edge.
+ */
+function showContextMenuFromBtn(event, itemJson, btnEl) {
+  event.preventDefault();
+  event.stopPropagation();
+  // Use the explicitly-passed element; fall back to event.target if not given
+  const btn  = btnEl || event.target.closest('button') || event.currentTarget;
+  const rect = btn.getBoundingClientRect();
+  // Open below the button, aligned to its right edge
+  _openContextMenu(rect.right, rect.bottom + 4, JSON.parse(itemJson));
+}
+
+function _openContextMenu(x, y, item) {
+  state.ctxTarget  = item;
+  state._ctxBucket = (item.bucket && item.bucket !== state.bucket) ? item.bucket : null;
+
+  const menu     = document.getElementById('contextMenu');
+  const isFolder = item.type === 'folder';
+
+  // Show/hide file-only items
+  menu.querySelectorAll('.file-only').forEach(el => {
+    el.style.display = isFolder ? 'none' : '';
+  });
+
+  // Close first (strip ctx-open, reset position) so transition re-fires
+  menu.classList.remove('ctx-open');
+  menu.style.left    = '-9999px';
+  menu.style.top     = '-9999px';
+  // Always visible in DOM (display:block) — pointer-events:none when not open
   menu.style.display = 'block';
 
-  const x = Math.min(event.clientX, window.innerWidth - 200);
-  const y = Math.min(event.clientY, window.innerHeight - 220);
-  menu.style.left = x + 'px';
-  menu.style.top  = y + 'px';
+  // Synchronous layout read — forces browser to apply the above styles
+  // before we move the element to the real position and add ctx-open
+  const mw = menu.offsetWidth  || 220;
+  const mh = menu.offsetHeight || 300;
 
-  // buttons: [0]=download [1]=rename [2]=presign [3]=viewInfo [4]=editMeta [divider] [5]=delete
-  const isFolder  = item.type === 'folder';
-  const btns      = menu.querySelectorAll('button');
-  btns[0].style.display = isFolder ? 'none' : 'flex'; // download
-  btns[2].style.display = isFolder ? 'none' : 'flex'; // copy url
-  btns[3].style.display = isFolder ? 'none' : 'flex'; // view info
-  btns[4].style.display = isFolder ? 'none' : 'flex'; // edit metadata
+  // Clamp to viewport
+  const left = Math.max(8, Math.min(x, window.innerWidth  - mw - 8));
+  const top  = Math.max(8, Math.min(y, window.innerHeight - mh - 8));
+
+  menu.style.left = left + 'px';
+  menu.style.top  = top  + 'px';
+
+  // Another read to flush position change before transition starts
+  void menu.offsetWidth;
+
+  // Adding ctx-open triggers the CSS transition: opacity 0→1, scale 0.96→1
+  menu.classList.add('ctx-open');
 }
 
 function hideContextMenu() {
-  document.getElementById('contextMenu').style.display = 'none';
+  const menu = document.getElementById('contextMenu');
+  if (!menu) return;
+  menu.classList.remove('ctx-open');
+  // Don't set display:none — let pointer-events:none handle interactivity.
+  // Move off-screen so it can't be accidentally hovered/tabbed.
+  menu.style.left = '-9999px';
+  menu.style.top  = '-9999px';
 }
 
-function ctxDownload() {
-  if (state.ctxTarget) downloadFile(state.ctxTarget.key);
+/** Returns the bucket for the currently targeted item (handles search results). */
+function _ctxBucket() {
+  return (state.ctxTarget && state.ctxTarget.bucket) || state.bucket;
+}
+
+// ── Context Menu action handlers ───────────────────────────────────────────
+function ctxDoOpen() {
+  if (state.ctxTarget) openFile(state.ctxTarget.key, _ctxBucket());
   hideContextMenu();
 }
 
-function ctxRename() {
+function ctxDoDownload() {
+  if (state.ctxTarget) downloadFile(state.ctxTarget.key, _ctxBucket());
+  hideContextMenu();
+}
+
+function ctxDoRename() {
   if (state.ctxTarget) openRenameModal(state.ctxTarget.key, state.ctxTarget.name);
   hideContextMenu();
 }
 
-function ctxPresign() {
+function ctxDoPresign() {
   if (state.ctxTarget) openPresignModal(state.ctxTarget.key);
   hideContextMenu();
 }
 
-function ctxViewInfo() {
+function ctxDoViewInfo() {
   if (state.ctxTarget) openInfoModal(state.ctxTarget.key);
   hideContextMenu();
 }
 
-function ctxEditMetadata() {
+function ctxDoEditMetadata() {
   if (state.ctxTarget) openEditMetaModal(state.ctxTarget.key);
   hideContextMenu();
 }
 
-function ctxDelete() {
+function ctxDoDelete() {
   if (state.ctxTarget) confirmDelete(state.ctxTarget.key, state.ctxTarget.type === 'folder');
   hideContextMenu();
+}
+
+function ctxDoCopy() {
+  if (state.ctxTarget) openDestPicker('copy', state.ctxTarget);
+  hideContextMenu();
+}
+
+function ctxDoMove() {
+  if (state.ctxTarget) openDestPicker('move', state.ctxTarget);
+  hideContextMenu();
+}
+
+// ── Destination Picker (Copy / Move) ──────────────────────────────────────
+
+/** Current picker state */
+const destPicker = {
+  mode:       'copy',   // 'copy' | 'move'
+  item:       null,     // source item {key, name, type, …}
+  prefix:     '',       // current browsed prefix
+  selected:   '',       // chosen destination prefix ('' = root)
+  prefixStack: [],      // breadcrumb stack [{label, prefix}]
+};
+
+function openDestPicker(mode, item) {
+  destPicker.mode        = mode;
+  destPicker.item        = item;
+  destPicker.prefix      = '';
+  destPicker.selected    = '';
+  destPicker.prefixStack = [];
+
+  // Labels
+  const isCopy = mode === 'copy';
+  document.getElementById('destPickerTitle').textContent       = isCopy ? 'Copy to…' : 'Move to…';
+  document.getElementById('destPickerConfirmLabel').textContent = isCopy ? 'Copy Here' : 'Move Here';
+  document.getElementById('destPickerBucket').textContent      = state.bucket;
+  document.getElementById('destPickerSrcName').textContent     = item.name;
+
+  // Icon colour: indigo for copy, violet for move
+  const iconEl = document.getElementById('destPickerIcon');
+  iconEl.style.background = isCopy ? 'rgba(99,102,241,0.12)' : 'rgba(139,92,246,0.12)';
+  iconEl.style.borderColor = isCopy ? 'rgba(99,102,241,0.2)' : 'rgba(139,92,246,0.2)';
+  iconEl.style.color       = isCopy ? 'var(--indigo)'        : '#8B5CF6';
+  iconEl.innerHTML = isCopy
+    ? `<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>`
+    : `<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="5 9 2 12 5 15"/><polyline points="9 5 12 2 15 5"/><line x1="2" y1="12" x2="22" y2="12"/><line x1="12" y1="2" x2="12" y2="22"/></svg>`;
+
+  document.getElementById('destPickerModal').style.display = 'flex';
+  destPickerLoadFolders('');
+}
+
+function closeDestPicker() {
+  document.getElementById('destPickerModal').style.display = 'none';
+}
+
+async function destPickerLoadFolders(prefix) {
+  destPicker.prefix   = prefix;
+  destPicker.selected = prefix;   // selecting a folder also selects it as destination
+  _destUpdateSelectedBar();
+  _destUpdateBreadcrumb();
+
+  const list = document.getElementById('destFolderList');
+  list.innerHTML = `<div class="dest-loading"><svg class="spin" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>Loading…</div>`;
+
+  try {
+    const res  = await fetch(
+      `/api/s3/folders?bucket=${encodeURIComponent(state.bucket)}&prefix=${encodeURIComponent(prefix)}`
+    );
+    const data = await res.json();
+    if (!res.ok) { list.innerHTML = `<div class="dest-empty">${escHtml(data.detail)}</div>`; return; }
+
+    const folders = data.folders || [];
+    if (!folders.length) {
+      list.innerHTML = `<div class="dest-empty">No sub-folders here.</div>`;
+      return;
+    }
+
+    list.innerHTML = folders.map(f => `
+      <button class="dest-folder-item" onclick="destPickerEnter('${escAttr(f.prefix)}', '${escAttr(f.name)}')">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+        <span>${escHtml(f.name)}</span>
+        <svg class="dest-chevron" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg>
+      </button>`).join('');
+  } catch(_) {
+    list.innerHTML = `<div class="dest-empty">Failed to load folders.</div>`;
+  }
+}
+
+function destPickerEnter(prefix, name) {
+  destPicker.prefixStack.push({ label: name, prefix });
+  destPickerLoadFolders(prefix);
+}
+
+function destPickerBack() {
+  destPicker.prefixStack.pop();
+  const prev = destPicker.prefixStack.length
+    ? destPicker.prefixStack[destPicker.prefixStack.length - 1].prefix
+    : '';
+  destPickerLoadFolders(prev);
+}
+
+function destPickerGoTo(prefix, stackIndex) {
+  // stackIndex -1 means root: clear entire stack
+  destPicker.prefixStack = stackIndex < 0 ? [] : destPicker.prefixStack.slice(0, stackIndex + 1);
+  destPickerLoadFolders(prefix);
+}
+
+function _destUpdateSelectedBar() {
+  const label = destPicker.selected ? destPicker.selected : '/ (root)';
+  document.getElementById('destSelectedPath').textContent = label;
+}
+
+function _destUpdateBreadcrumb() {
+  const bc    = document.getElementById('destBreadcrumb');
+  const stack = destPicker.prefixStack;
+  let html    = `<button class="dest-bc-item" onclick="destPickerGoTo('', -1)">
+    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>
+    Root
+  </button>`;
+  stack.forEach((entry, i) => {
+    html += `<span class="dest-bc-sep">›</span>
+      <button class="dest-bc-item" onclick="destPickerGoTo('${escAttr(entry.prefix)}', ${i})">
+        ${escHtml(entry.label)}
+      </button>`;
+  });
+  bc.innerHTML = html;
+}
+
+async function destPickerConfirm() {
+  const { mode, item } = destPicker;
+
+  // Guard: item must be set (inline button passes it correctly via _driveXItems ref)
+  if (!item) {
+    showToast('No item selected. Please try again.', 'error');
+    return;
+  }
+
+  const dstPrefix  = destPicker.selected;   // '' = root
+  const isFolder   = item.type === 'folder';
+
+  // Guard: moving folder into itself
+  if (mode === 'move' && isFolder) {
+    const src = item.key.endsWith('/') ? item.key : item.key + '/';
+    if (dstPrefix.startsWith(src)) {
+      showToast('Cannot move a folder into itself.', 'error');
+      return;
+    }
+  }
+
+  const action      = mode === 'copy' ? 'Copy' : 'Move';
+  const targetLabel = dstPrefix || 'root';
+
+  // Close picker now — confirm modal will open on top
+  closeDestPicker();
+
+  showConfirmModal(
+    `${action} "${item.name}"`,
+    `${action} to "${targetLabel}"? ${mode === 'move' ? 'The original will be removed.' : 'The original will be preserved.'}`,
+    async () => {
+      showLoading(`${action}ing…`);
+      try {
+        const form = new FormData();
+        form.append('bucket',     state.bucket);
+        form.append('src_key',    item.key);
+        form.append('dst_prefix', dstPrefix);
+        form.append('is_folder',  isFolder ? 'true' : 'false');
+        form.append('csrf_token', csrf());
+
+        const res  = await fetch(`/api/s3/${mode}`, { method: 'POST', body: form });
+        const data = await res.json();
+        if (res.ok) {
+          showToast(data.message || `${action} completed successfully.`, 'success');
+          loadObjects();
+        } else {
+          showToast(data.detail || `${action} failed.`, 'error');
+        }
+      } catch (_) {
+        showToast(`Network error during ${mode}.`, 'error');
+      } finally {
+        hideLoading();
+      }
+    }
+  );
 }
 
 // ── Confirm Modal ──────────────────────────────────────────────────────────
 let confirmCallback = null;
 
 function showConfirmModal(title, message, onConfirm) {
-  document.getElementById('confirmTitle').textContent = title;
+  document.getElementById('confirmTitle').textContent   = title;
   document.getElementById('confirmMessage').textContent = message;
   confirmCallback = onConfirm;
   document.getElementById('confirmModal').style.display = 'flex';
   document.getElementById('confirmOkBtn').onclick = () => {
+    const cb = confirmCallback;   // capture before closeConfirmModal nulls it
     closeConfirmModal();
-    if (confirmCallback) confirmCallback();
+    if (cb) cb();
   };
 }
 

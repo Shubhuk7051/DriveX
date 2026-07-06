@@ -326,58 +326,137 @@ async def rename_object(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-# --- Copy ---
+# --- Copy (file or folder) ---
 
 @router.post("/copy")
-async def copy_object(
+async def copy_object_route(
     request: Request,
-    src_bucket: str = Form(...),
-    src_key: str = Form(...),
-    dst_bucket: str = Form(...),
-    dst_key: str = Form(...),
-    csrf_token: str = Form(...),
+    bucket: str      = Form(...),
+    src_key: str     = Form(...),
+    dst_prefix: str  = Form(""),      # destination folder prefix (may be empty = root)
+    is_folder: bool  = Form(False),
+    csrf_token: str  = Form(...),
 ):
-    """Copy an S3 object."""
+    """
+    Copy a file or folder to a destination prefix within the same bucket.
+    Preserves metadata, tags, encryption, storage class on every object.
+    Folder copies are recursive.
+    """
     _check_csrf(request, csrf_token)
     creds, allowed = _get_creds_and_buckets(request)
-    src_bucket = validate_bucket_name(src_bucket, allowed)
-    dst_bucket = validate_bucket_name(dst_bucket, allowed)
+    bucket  = validate_bucket_name(bucket, allowed)
     src_key = validate_s3_key(src_key)
-    dst_key = validate_s3_key(dst_key)
+    if dst_prefix:
+        dst_prefix = validate_s3_key(dst_prefix)
 
     try:
-        s3_service.copy_object(creds, src_bucket, src_key, dst_bucket, dst_key)
-        audit_log(request, "COPY", bucket=src_bucket, key=src_key, detail=f"dst={dst_bucket}/{dst_key}")
-        return JSONResponse({"success": True, "message": "Copied successfully"})
+        if is_folder:
+            # Ensure trailing slash on both src and dst prefixes
+            src_prefix = src_key if src_key.endswith("/") else src_key + "/"
+            folder_name = src_prefix.rstrip("/").split("/")[-1]
+            dst_full    = (dst_prefix.rstrip("/") + "/" if dst_prefix else "") + folder_name + "/"
+            count = s3_service.copy_folder(creds, bucket, src_prefix, bucket, dst_full)
+            audit_log(request, "COPY_FOLDER", bucket=bucket, key=src_key,
+                      detail=f"dst={dst_full} objects={count}")
+            return JSONResponse({"success": True,
+                                 "message": f"Folder copied ({count} object{'s' if count != 1 else ''}).",
+                                 "dst_key": dst_full})
+        else:
+            # File copy: place into dst_prefix with original filename
+            filename = src_key.split("/")[-1]
+            dst_key  = (dst_prefix.rstrip("/") + "/" if dst_prefix else "") + filename
+            if dst_key == src_key:
+                # Same destination — auto-add copy suffix
+                name, _, ext = filename.rpartition(".")
+                dst_key = (dst_prefix.rstrip("/") + "/" if dst_prefix else "") + \
+                           (f"{name}_copy.{ext}" if ext else f"{filename}_copy")
+            s3_service.copy_object(creds, bucket, src_key, bucket, dst_key)
+            audit_log(request, "COPY", bucket=bucket, key=src_key, detail=f"dst={dst_key}")
+            return JSONResponse({"success": True,
+                                 "message": "File copied successfully.",
+                                 "dst_key": dst_key})
     except HTTPException:
         raise
     except Exception as e:
+        audit_log(request, "COPY", bucket=bucket, key=src_key, status="FAILURE", detail=str(e))
         raise HTTPException(status_code=500, detail=str(e))
 
 
-# --- Move ---
+# --- Move (file or folder) ---
 
 @router.post("/move")
-async def move_object(
+async def move_object_route(
     request: Request,
-    src_bucket: str = Form(...),
-    src_key: str = Form(...),
-    dst_bucket: str = Form(...),
-    dst_key: str = Form(...),
-    csrf_token: str = Form(...),
+    bucket: str      = Form(...),
+    src_key: str     = Form(...),
+    dst_prefix: str  = Form(""),      # destination folder prefix (may be empty = root)
+    is_folder: bool  = Form(False),
+    csrf_token: str  = Form(...),
 ):
-    """Move an S3 object."""
+    """
+    Move a file or folder to a destination prefix within the same bucket.
+    Implemented as copy-then-delete; source is removed only after successful copy.
+    Preserves metadata, tags, encryption, storage class on every object.
+    """
     _check_csrf(request, csrf_token)
     creds, allowed = _get_creds_and_buckets(request)
-    src_bucket = validate_bucket_name(src_bucket, allowed)
-    dst_bucket = validate_bucket_name(dst_bucket, allowed)
+    bucket  = validate_bucket_name(bucket, allowed)
     src_key = validate_s3_key(src_key)
-    dst_key = validate_s3_key(dst_key)
+    if dst_prefix:
+        dst_prefix = validate_s3_key(dst_prefix)
 
     try:
-        s3_service.move_object(creds, src_bucket, src_key, dst_bucket, dst_key)
-        audit_log(request, "MOVE", bucket=src_bucket, key=src_key, detail=f"dst={dst_bucket}/{dst_key}")
-        return JSONResponse({"success": True, "message": "Moved successfully"})
+        if is_folder:
+            src_prefix  = src_key if src_key.endswith("/") else src_key + "/"
+            folder_name = src_prefix.rstrip("/").split("/")[-1]
+            dst_full    = (dst_prefix.rstrip("/") + "/" if dst_prefix else "") + folder_name + "/"
+            if dst_full == src_prefix:
+                raise HTTPException(status_code=400,
+                                    detail="Source and destination are the same.")
+            count = s3_service.move_folder(creds, bucket, src_prefix, bucket, dst_full)
+            audit_log(request, "MOVE_FOLDER", bucket=bucket, key=src_key,
+                      detail=f"dst={dst_full} objects={count}")
+            return JSONResponse({"success": True,
+                                 "message": f"Folder moved ({count} object{'s' if count != 1 else ''}).",
+                                 "dst_key": dst_full})
+        else:
+            filename = src_key.split("/")[-1]
+            dst_key  = (dst_prefix.rstrip("/") + "/" if dst_prefix else "") + filename
+            if dst_key == src_key:
+                raise HTTPException(status_code=400,
+                                    detail="Source and destination are the same.")
+            s3_service.move_object(creds, bucket, src_key, bucket, dst_key)
+            audit_log(request, "MOVE", bucket=bucket, key=src_key, detail=f"dst={dst_key}")
+            return JSONResponse({"success": True,
+                                 "message": "File moved successfully.",
+                                 "dst_key": dst_key})
+    except HTTPException:
+        raise
+    except Exception as e:
+        audit_log(request, "MOVE", bucket=bucket, key=src_key, status="FAILURE", detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# --- List folders (destination picker) ---
+
+@router.get("/folders")
+async def list_folders_route(
+    request: Request,
+    bucket: str,
+    prefix: str = "",
+):
+    """
+    Return immediate sub-folders under prefix.
+    Used by the Copy/Move destination-picker modal to build a folder tree.
+    """
+    creds, allowed = _get_creds_and_buckets(request)
+    bucket = validate_bucket_name(bucket, allowed)
+    if prefix:
+        prefix = validate_s3_key(prefix)
+
+    try:
+        folders = s3_service.list_folders(creds, bucket, prefix)
+        return JSONResponse({"folders": folders, "prefix": prefix})
     except HTTPException:
         raise
     except Exception as e:

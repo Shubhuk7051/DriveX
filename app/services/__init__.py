@@ -9,8 +9,11 @@ from .s3_service import (
     delete_folder,
     create_folder,
     copy_object,
+    copy_folder,
     move_object,
+    move_folder,
     rename_object,
+    list_folders,
     get_object_metadata,
     search_objects,
 )

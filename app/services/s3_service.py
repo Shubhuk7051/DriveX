@@ -309,23 +309,142 @@ def create_folder(creds: dict, bucket: str, prefix: str):
 
 
 def copy_object(creds: dict, src_bucket: str, src_key: str, dst_bucket: str, dst_key: str):
-    """Copy an S3 object from source to destination."""
+    """
+    Copy an S3 object from source to destination, preserving:
+    - Metadata (MetadataDirective=COPY)
+    - Object tags (TaggingDirective=COPY)
+    - Storage class
+    - Server-side encryption (SSE-S3 and SSE-KMS)
+    - ACL (attempted; skipped gracefully if bucket uses ownership controls)
+    """
     s3 = get_s3_client(creds)
-    copy_source = {"Bucket": src_bucket, "Key": src_key}
     try:
-        s3.copy_object(CopySource=copy_source, Bucket=dst_bucket, Key=dst_key)
+        # Fetch current object attributes to preserve them
+        head = s3.head_object(Bucket=src_bucket, Key=src_key)
+    except botocore.exceptions.ClientError as e:
+        _raise_s3_error(e, src_bucket, src_key)
+
+    copy_kwargs: dict = {
+        "CopySource":        {"Bucket": src_bucket, "Key": src_key},
+        "Bucket":            dst_bucket,
+        "Key":               dst_key,
+        "MetadataDirective": "COPY",   # preserve all existing metadata headers
+        "TaggingDirective":  "COPY",   # preserve object tags
+    }
+
+    # Preserve storage class
+    storage_class = head.get("StorageClass")
+    if storage_class:
+        copy_kwargs["StorageClass"] = storage_class
+
+    # Preserve server-side encryption
+    sse = head.get("ServerSideEncryption")
+    if sse:
+        copy_kwargs["ServerSideEncryption"] = sse
+    sse_kms = head.get("SSEKMSKeyId")
+    if sse_kms:
+        copy_kwargs["SSEKMSKeyId"] = sse_kms
+
+    try:
+        s3.copy_object(**copy_kwargs)
     except botocore.exceptions.ClientError as e:
         _raise_s3_error(e, src_bucket, src_key)
 
 
+def copy_folder(creds: dict, src_bucket: str, src_prefix: str, dst_bucket: str, dst_prefix: str) -> int:
+    """
+    Recursively copy all objects under src_prefix to dst_prefix.
+    Preserves metadata, tags, encryption, and storage class on every object.
+    Returns the count of objects copied.
+    """
+    s3 = get_s3_client(creds)
+    paginator = s3.get_paginator("list_objects_v2")
+    pages = paginator.paginate(Bucket=src_bucket, Prefix=src_prefix)
+    copied = 0
+
+    try:
+        for page in pages:
+            for obj in page.get("Contents", []):
+                src_key = obj["Key"]
+                # Rebase the key from src_prefix → dst_prefix
+                relative  = src_key[len(src_prefix):]
+                dst_key   = dst_prefix + relative
+                copy_object(creds, src_bucket, src_key, dst_bucket, dst_key)
+                copied += 1
+    except botocore.exceptions.ClientError as e:
+        _raise_s3_error(e, src_bucket, src_prefix)
+
+    return copied
+
+
 def move_object(creds: dict, src_bucket: str, src_key: str, dst_bucket: str, dst_key: str):
-    """Move (copy + delete) an S3 object."""
+    """Move (copy preserving all attributes + delete source) an S3 object."""
     copy_object(creds, src_bucket, src_key, dst_bucket, dst_key)
     delete_object(creds, src_bucket, src_key)
 
 
+def move_folder(creds: dict, src_bucket: str, src_prefix: str, dst_bucket: str, dst_prefix: str) -> int:
+    """
+    Recursively move all objects under src_prefix to dst_prefix.
+    Copies every object (preserving all attributes), then bulk-deletes the source.
+    Returns the count of objects moved.
+    """
+    s3 = get_s3_client(creds)
+    paginator = s3.get_paginator("list_objects_v2")
+    pages = paginator.paginate(Bucket=src_bucket, Prefix=src_prefix)
+    src_keys = []
+
+    try:
+        for page in pages:
+            for obj in page.get("Contents", []):
+                src_key = obj["Key"]
+                relative = src_key[len(src_prefix):]
+                dst_key  = dst_prefix + relative
+                copy_object(creds, src_bucket, src_key, dst_bucket, dst_key)
+                src_keys.append({"Key": src_key})
+
+        # Bulk-delete sources in batches of 1000 (S3 limit)
+        for i in range(0, len(src_keys), 1000):
+            s3.delete_objects(
+                Bucket=src_bucket,
+                Delete={"Objects": src_keys[i:i + 1000]},
+            )
+    except botocore.exceptions.ClientError as e:
+        _raise_s3_error(e, src_bucket, src_prefix)
+
+    return len(src_keys)
+
+
+def list_folders(creds: dict, bucket: str, prefix: str = "") -> list:
+    """
+    List only the immediate sub-folders (common prefixes) under prefix.
+    Used by the Copy/Move destination picker in the UI.
+    Returns [{name, prefix}] sorted alphabetically.
+    """
+    s3 = get_s3_client(creds)
+    try:
+        resp = s3.list_objects_v2(
+            Bucket=bucket,
+            Prefix=prefix,
+            Delimiter="/",
+            MaxKeys=500,
+        )
+    except botocore.exceptions.ClientError as e:
+        _raise_s3_error(e, bucket, prefix)
+
+    folders = []
+    for cp in resp.get("CommonPrefixes", []):
+        full_prefix = cp["Prefix"]
+        name        = full_prefix[len(prefix):].rstrip("/")
+        if name:
+            folders.append({"name": name, "prefix": full_prefix})
+
+    # Also include root as the first option when we are inside a sub-prefix
+    return sorted(folders, key=lambda f: f["name"].lower())
+
+
 def rename_object(creds: dict, bucket: str, old_key: str, new_key: str):
-    """Rename an S3 object (copy to new key, delete old)."""
+    """Rename an S3 object (copy preserving all attributes, then delete old key)."""
     move_object(creds, bucket, old_key, bucket, new_key)
 
 

@@ -508,15 +508,129 @@
   </main>
 </div>
 
-<!-- Context Menu -->
-<div id="contextMenu" class="context-menu" style="display:none;">
-  <button onclick="ctxDownload()"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>Download</button>
-  <button onclick="ctxRename()"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>Rename</button>
-  <button onclick="ctxPresign()"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>Copy URL</button>
-  <button onclick="ctxViewInfo()"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>View Info</button>
-  <button onclick="ctxEditMetadata()"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z"/><line x1="7" y1="7" x2="7.01" y2="7"/></svg>Edit Metadata</button>
-  <div class="ctx-divider"></div>
-  <button onclick="ctxDelete()" class="danger"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>Delete</button>
+<!-- ══ Context Menu ═══════════════════════════════════════════════════════ -->
+<div id="contextMenu" class="ctx-menu" role="menu">
+  <!-- Group 1: Open / Download -->
+  <div class="ctx-group">
+    <button class="ctx-item file-only" id="ctxOpen" onclick="ctxDoOpen()" role="menuitem">
+      <span class="ctx-icon">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
+      </span>
+      <span class="ctx-label">Open</span>
+      <span class="ctx-hint">New tab</span>
+    </button>
+    <button class="ctx-item file-only" id="ctxDownload" onclick="ctxDoDownload()" role="menuitem">
+      <span class="ctx-icon">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+      </span>
+      <span class="ctx-label">Download</span>
+    </button>
+  </div>
+  <div class="ctx-separator"></div>
+  <!-- Group 2: Organise -->
+  <div class="ctx-group">
+    <button class="ctx-item" id="ctxCopy" onclick="ctxDoCopy()" role="menuitem">
+      <span class="ctx-icon">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+      </span>
+      <span class="ctx-label">Copy to…</span>
+    </button>
+    <button class="ctx-item" id="ctxMove" onclick="ctxDoMove()" role="menuitem">
+      <span class="ctx-icon">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="5 9 2 12 5 15"/><polyline points="9 5 12 2 15 5"/><line x1="2" y1="12" x2="22" y2="12"/><line x1="12" y1="2" x2="12" y2="22"/></svg>
+      </span>
+      <span class="ctx-label">Move to…</span>
+    </button>
+    <button class="ctx-item" id="ctxRename" onclick="ctxDoRename()" role="menuitem">
+      <span class="ctx-icon">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+      </span>
+      <span class="ctx-label">Rename</span>
+    </button>
+  </div>
+  <div class="ctx-separator"></div>
+  <!-- Group 3: Info & Metadata -->
+  <div class="ctx-group">
+    <button class="ctx-item file-only" id="ctxCopyUrl" onclick="ctxDoPresign()" role="menuitem">
+      <span class="ctx-icon">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
+      </span>
+      <span class="ctx-label">Copy Object URL</span>
+    </button>
+    <button class="ctx-item file-only" id="ctxViewInfo" onclick="ctxDoViewInfo()" role="menuitem">
+      <span class="ctx-icon">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+      </span>
+      <span class="ctx-label">View Info</span>
+    </button>
+    <button class="ctx-item file-only" id="ctxEditMeta" onclick="ctxDoEditMetadata()" role="menuitem">
+      <span class="ctx-icon">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z"/><line x1="7" y1="7" x2="7.01" y2="7"/></svg>
+      </span>
+      <span class="ctx-label">Edit Metadata</span>
+    </button>
+  </div>
+  <div class="ctx-separator"></div>
+  <!-- Group 4: Destructive -->
+  <div class="ctx-group">
+    <button class="ctx-item ctx-danger" id="ctxDelete" onclick="ctxDoDelete()" role="menuitem">
+      <span class="ctx-icon">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>
+      </span>
+      <span class="ctx-label">Delete</span>
+    </button>
+  </div>
+</div>
+
+<!-- ══ Copy / Move Destination Picker Modal ════════════════════════════════ -->
+<div id="destPickerModal" class="modal-overlay" style="display:none;">
+  <div class="modal-box dest-picker-box">
+    <div class="modal-header">
+      <div class="modal-header-left">
+        <div class="modal-title-icon" id="destPickerIcon">
+          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+        </div>
+        <div>
+          <h3 id="destPickerTitle">Copy to…</h3>
+          <span class="modal-subtitle">Choose a destination folder in <strong id="destPickerBucket"></strong></span>
+        </div>
+      </div>
+      <button class="modal-close" onclick="closeDestPicker()">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+      </button>
+    </div>
+
+    <!-- Source info -->
+    <div class="dest-src-info">
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><polyline points="13 2 13 9 20 9"/></svg>
+      <span id="destPickerSrcName"></span>
+    </div>
+
+    <!-- Folder tree breadcrumb -->
+    <div class="dest-breadcrumb" id="destBreadcrumb"></div>
+
+    <!-- Folder list -->
+    <div class="dest-folder-list" id="destFolderList">
+      <div class="dest-loading">
+        <svg class="spin" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>
+        Loading folders…
+      </div>
+    </div>
+
+    <!-- Selected destination display -->
+    <div class="dest-selected" id="destSelectedBar">
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+      Destination: <strong id="destSelectedPath">/ (root)</strong>
+    </div>
+
+    <div class="modal-actions">
+      <button class="btn btn-ghost" onclick="closeDestPicker()">Cancel</button>
+      <button class="btn btn-primary" id="destPickerConfirmBtn" onclick="destPickerConfirm()">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg>
+        <span id="destPickerConfirmLabel">Copy Here</span>
+      </button>
+    </div>
+  </div>
 </div>
 
 <input type="hidden" id="csrfToken" value="{{ csrf_token }}" />
