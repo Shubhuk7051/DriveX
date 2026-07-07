@@ -282,33 +282,64 @@ function renderGridView(folders, files) {
   const items = [...folders, ...files];
   if (!items.length) { grid.innerHTML = ''; return; }
 
-  grid.innerHTML = items.map(item => {
+  // Same _driveXItems ref pattern as renderListView — avoids JSON serialisation
+  // inside HTML attributes which breaks on special chars / HTML encoding.
+  window._driveXItems = window._driveXItems || {};
+  const ns = 'gv_' + Date.now();
+
+  grid.innerHTML = items.map((item, idx) => {
     const iconCls  = getIconClass(item.type);
     const icon     = getIconSvg(item.type);
     const isFolder = item.type === 'folder';
-    const itemJson = JSON.stringify(JSON.stringify(item));
-    const onDblClick = isFolder
-      ? `navigateTo('${escHtml(item.key)}')`
-      : `openFile('${escHtml(item.key)}')`;
+    const k        = escHtml(item.key);
+    const ref      = `${ns}_${idx}`;
+    window._driveXItems[ref] = item;
+
+    const navClick = isFolder
+      ? `ondblclick="navigateTo('${k}')" onclick="event.stopPropagation();selectGridItem(this)"`
+      : `ondblclick="openFile('${k}')"   onclick="event.stopPropagation();selectGridItem(this)"`;
+
+    // File-only buttons
+    const fileButtons = isFolder ? '' : `
+      <button class="grid-act-btn" title="Open"
+        onclick="event.stopPropagation();openFile('${k}')">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
+      </button>
+      <button class="grid-act-btn" title="Download"
+        onclick="event.stopPropagation();downloadFile('${k}')">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+      </button>
+      <button class="grid-act-btn" title="Copy URL"
+        onclick="event.stopPropagation();openPresignModal('${k}')">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
+      </button>
+      <button class="grid-act-btn" title="Edit Metadata"
+        onclick="event.stopPropagation();openEditMetaModal('${k}')">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z"/><line x1="7" y1="7" x2="7.01" y2="7"/></svg>
+      </button>`;
+
+    // Shared buttons (files + folders)
+    const sharedButtons = `
+      <button class="grid-act-btn" title="Copy"
+        onclick="event.stopPropagation();openDestPicker('copy', window._driveXItems['${ref}'])">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+      </button>
+      <button class="grid-act-btn" title="Move"
+        onclick="event.stopPropagation();openDestPicker('move', window._driveXItems['${ref}'])">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="5 9 2 12 5 15"/><polyline points="9 5 12 2 15 5"/><line x1="2" y1="12" x2="22" y2="12"/><line x1="12" y1="2" x2="12" y2="22"/></svg>
+      </button>
+      <button class="grid-act-btn grid-act-danger" title="Delete"
+        onclick="event.stopPropagation();confirmDelete('${k}', ${isFolder})">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>
+      </button>`;
 
     return `
-      <div
-        class="grid-item"
-        ondblclick="${onDblClick}"
-        onclick="selectGridItem(this)"
-        oncontextmenu="showContextMenu(event, ${itemJson})"
-        data-key="${escAttr(item.key)}"
-        data-item="${escAttr(JSON.stringify(item))}"
-      >
-        <button
-          class="grid-dots-btn"
-          title="More actions"
-          onclick="event.stopPropagation(); showContextMenuFromBtn(event, ${itemJson}, this)"
-        >
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
-            <circle cx="12" cy="5" r="1.2"/><circle cx="12" cy="12" r="1.2"/><circle cx="12" cy="19" r="1.2"/>
-          </svg>
-        </button>
+      <div class="grid-item" ${navClick}
+           data-key="${escAttr(item.key)}" data-item="${escAttr(JSON.stringify(item))}">
+        <div class="grid-act-group">
+          ${fileButtons}
+          ${sharedButtons}
+        </div>
         <div class="grid-icon ${iconCls}">${icon}</div>
         <div class="grid-name" title="${escHtml(item.name)}">${escHtml(item.name)}</div>
         <div class="grid-meta">${item.size_human || (isFolder ? 'Folder' : '-')}</div>
