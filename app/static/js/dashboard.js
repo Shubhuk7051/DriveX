@@ -353,48 +353,86 @@ async function runSearch(query) {
     );
     const data = await res.json();
 
-    // Show search results panel
-    document.getElementById('listView').style.display = 'none';
-    document.getElementById('gridView').style.display = 'none';
+    document.getElementById('listView').style.display   = 'none';
+    document.getElementById('gridView').style.display   = 'none';
     document.getElementById('emptyState').style.display = 'none';
     const panel = document.getElementById('searchResults');
     panel.style.display = 'block';
-    document.getElementById('searchResultCount').textContent = `${data.count} result${data.count !== 1 ? 's' : ''}`;
+    document.getElementById('searchResultCount').textContent =
+      `${data.count} result${data.count !== 1 ? 's' : ''}`;
 
     const tbody = document.getElementById('searchTableBody');
     if (!data.results.length) {
-      tbody.innerHTML = `<tr><td colspan="5" style="text-align:center;padding:32px;color:var(--text-muted)">No files found matching "${escHtml(query)}"</td></tr>`;
+      tbody.innerHTML = `<tr><td colspan="6" style="text-align:center;padding:32px;color:var(--text-muted)">No results found matching "${escHtml(query)}"</td></tr>`;
       return;
     }
+
     tbody.innerHTML = data.results.map(r => {
-      const k = escHtml(r.key);
+      const isFolder = r.is_folder || r.type === 'folder';
+      const k  = escHtml(r.key);
+
+      // Full path: everything except the trailing filename  e.g. "a/b/" or "a/b/file.txt"
+      const pathParts  = r.path ? r.path.split('/').filter(Boolean) : [];
+      // For files: show parent dirs.  For folders: show full prefix.
+      const parentPath = isFolder
+        ? r.path                                           // "a/b/c/"
+        : (pathParts.length > 1 ? pathParts.slice(0, -1).join('/') + '/' : '');
+
+      const pathDisplay = parentPath
+        ? `<span class="sr-path">${highlightMatch(escHtml(parentPath), query)}</span>`
+        : `<span class="sr-path sr-root">/ (root)</span>`;
+
+      const nameDisplay = highlightMatch(escHtml(r.name), query);
+      const iconCls     = getIconClass(r.type);
+      const icon        = getIconSvg(r.type);
+
+      // Action buttons differ for files vs folders
+      const actions = isFolder ? `
+        <button class="act-btn" title="Open folder"
+          onclick="event.stopPropagation();navigateTo('${k}')">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+          Open
+        </button>
+        <button class="act-danger act-btn" title="Delete"
+          onclick="event.stopPropagation();confirmDelete('${k}', true)">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>
+          Delete
+        </button>` : `
+        <button class="act-btn" title="Open"
+          onclick="event.stopPropagation();openFile('${k}')">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
+          Open
+        </button>
+        <button class="act-btn" title="Download"
+          onclick="event.stopPropagation();downloadFile('${k}', '${escHtml(r.bucket)}')">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+          Download
+        </button>
+        <button class="act-danger act-btn" title="Delete"
+          onclick="event.stopPropagation();confirmDelete('${k}', false)">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>
+          Delete
+        </button>`;
+
+      const rowClick = isFolder
+        ? `ondblclick="navigateTo('${k}')" onclick="selectRow(this)"`
+        : `ondblclick="openFile('${k}')"   onclick="selectRow(this)"`;
+
       return `
-      <tr class="file-row" ondblclick="openFile('${k}')" onclick="selectRow(this)"
+      <tr class="file-row" ${rowClick}
           data-key="${escAttr(r.key)}" data-item="${escAttr(JSON.stringify(r))}">
         <td>
           <div class="file-name-cell">
-            <div class="file-icon ${getIconClass(r.type)}">${getIconSvg(r.type)}</div>
-            <span class="file-name-text" title="${escHtml(r.key)}">${escHtml(r.name)}</span>
+            <div class="file-icon ${iconCls}">${icon}</div>
+            <span class="file-name-text" title="${escHtml(r.key)}">${nameDisplay}</span>
           </div>
         </td>
+        <td class="sr-path-cell">${pathDisplay}</td>
         <td><span class="file-type-badge">${r.bucket}</span></td>
         <td class="file-size">${r.size_human}</td>
         <td class="file-date">${r.last_modified_human}</td>
         <td class="col-actions">
-          <div class="act-group">
-            <button class="act-btn" title="Open"     onclick="event.stopPropagation();openFile('${k}')">
-              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
-              Open
-            </button>
-            <button class="act-btn" title="Download" onclick="event.stopPropagation();downloadFile('${k}', '${escHtml(r.bucket)}')">
-              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-              Download
-            </button>
-            <button class="act-danger act-btn" title="Delete" onclick="event.stopPropagation();confirmDelete('${k}', false)">
-              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>
-              Delete
-            </button>
-          </div>
+          <div class="act-group">${actions}</div>
         </td>
       </tr>`;
     }).join('');
@@ -403,6 +441,17 @@ async function runSearch(query) {
   } finally {
     hideLoading();
   }
+}
+
+/**
+ * Wrap every occurrence of `query` in the `text` (already HTML-escaped)
+ * with a highlight span. Case-insensitive.
+ */
+function highlightMatch(text, query) {
+  if (!query) return text;
+  const escaped = query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return text.replace(new RegExp(escaped, 'gi'),
+    m => `<mark class="sr-highlight">${m}</mark>`);
 }
 
 function clearSearch() {

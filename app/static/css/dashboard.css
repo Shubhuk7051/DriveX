@@ -1506,6 +1506,35 @@ body {
 .search-results-header h4 { font-size: 14px; font-weight: 600; }
 #searchResultCount { font-size: 12px; color: var(--text-muted); }
 
+/* ── Search results: path column + highlight ─────────────────────────────── */
+.sr-path-cell {
+  max-width: 220px;
+}
+
+.sr-path {
+  display: block;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sr-root {
+  font-style: italic;
+  font-family: var(--font);
+}
+
+mark.sr-highlight {
+  background: rgba(99,102,241,0.28);
+  color: #c7c8ff;
+  border-radius: 2px;
+  padding: 0 1px;
+  font-style: inherit;
+  font-weight: 600;
+}
+
 /* Animations */
 @keyframes spin { to { transform: rotate(360deg); } }
 .spin { animation: spin 0.8s linear infinite; }

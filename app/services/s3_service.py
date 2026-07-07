@@ -468,35 +468,88 @@ def get_object_metadata(creds: dict, bucket: str, key: str) -> dict:
 
 
 def search_objects(creds: dict, bucket: str, query: str, prefix: str = "") -> list:
-    """Search for objects in a bucket matching a query string."""
+    """
+    Search for files AND folders matching query in name or path.
+    - Files:   matched against both the filename and full key path.
+    - Folders: discovered via CommonPrefixes at every level (recursive BFS).
+    Returns max 200 results sorted by relevance (name match first, then path match).
+    """
     s3 = get_s3_client(creds)
-    results = []
     query_lower = query.lower()
-    paginator = s3.get_paginator("list_objects_v2")
-    pages = paginator.paginate(Bucket=bucket, Prefix=prefix)
+    results = []
+    seen_keys = set()
 
+    # ── Pass 1: scan all objects (files) via flat pagination ────────────────
+    paginator = s3.get_paginator("list_objects_v2")
     try:
-        for page in pages:
+        for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
             for obj in page.get("Contents", []):
-                key = obj["Key"]
-                name = key.split("/")[-1] if "/" in key else key
-                if query_lower in name.lower():
+                key  = obj["Key"]
+                if key.endswith("/"):
+                    continue   # skip folder-placeholder objects; handled below
+                name = key.split("/")[-1]
+                path = key                          # full path shown in UI
+                # Match against filename or any path segment
+                if query_lower in name.lower() or query_lower in key.lower():
                     size = obj.get("Size", 0)
                     results.append({
-                        "key": key,
-                        "name": name,
-                        "bucket": bucket,
-                        "type": _guess_type(name),
-                        "size": size,
-                        "size_human": _human_size(size),
-                        "last_modified_human": obj["LastModified"].strftime("%b %d, %Y %H:%M"),
+                        "key":                  key,
+                        "name":                 name,
+                        "path":                 path,
+                        "bucket":               bucket,
+                        "type":                 _guess_type(name),
+                        "size":                 size,
+                        "size_human":           _human_size(size),
+                        "last_modified_human":  obj["LastModified"].strftime("%b %d, %Y %H:%M"),
+                        "is_folder":            False,
+                        # name_match = True means exact filename hit → shown first
+                        "_name_match":          query_lower in name.lower(),
                     })
+                    seen_keys.add(key)
             if len(results) >= 200:
                 break
     except botocore.exceptions.ClientError as e:
         _raise_s3_error(e, bucket)
 
-    return results
+    # ── Pass 2: discover folders via BFS with delimiter ─────────────────────
+    # Walk the prefix tree breadth-first to find folders whose name matches.
+    queue = [prefix]
+    try:
+        while queue and len(results) < 200:
+            current_prefix = queue.pop(0)
+            resp = s3.list_objects_v2(
+                Bucket=bucket,
+                Prefix=current_prefix,
+                Delimiter="/",
+                MaxKeys=500,
+            )
+            for cp in resp.get("CommonPrefixes", []):
+                folder_prefix = cp["Prefix"]           # e.g. "a/b/c/"
+                folder_name   = folder_prefix.rstrip("/").split("/")[-1]
+                if folder_prefix not in seen_keys:
+                    if query_lower in folder_name.lower() or query_lower in folder_prefix.lower():
+                        results.append({
+                            "key":                  folder_prefix,
+                            "name":                 folder_name,
+                            "path":                 folder_prefix,
+                            "bucket":               bucket,
+                            "type":                 "folder",
+                            "size":                 0,
+                            "size_human":           "-",
+                            "last_modified_human":  "-",
+                            "is_folder":            True,
+                            "_name_match":          query_lower in folder_name.lower(),
+                        })
+                        seen_keys.add(folder_prefix)
+                    # Always recurse into this folder to find deeper matches
+                    queue.append(folder_prefix)
+    except botocore.exceptions.ClientError as e:
+        _raise_s3_error(e, bucket)
+
+    # Sort: name-match hits first, then path-match; folders before files within each group
+    results.sort(key=lambda r: (not r.pop("_name_match"), r["type"] != "folder", r["path"].lower()))
+
+    return results[:200]
 
 
 # --- Helper functions ---
